@@ -43,7 +43,7 @@ REAP (REAP needs calibration data and was infeasible on this hardware).
 
 A 256k 4-bit MoE for multi-node TP, not a single-GPU model. Needs sm_121 Triton
 sparse-MLA kernels (native `_flashmla_C` is Hopper-only). Stack and bootstrap:
-github.com/<your-username>/glm-5.2-gb10. Runtime: TP=4, `--kv-cache-dtype
+github.com/CosmicRaisins/glm-5.2-gb10. Runtime: TP=4, `--kv-cache-dtype
 fp8_ds_mla`, `--reasoning-parser glm45 --tool-call-parser glm47
 --enable-auto-tool-choice`, cudagraph FULL, `gpu-memory-utilization 0.93`.
 
