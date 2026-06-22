@@ -47,6 +47,9 @@ github.com/CosmicRaisins/glm-5.2-gb10. Runtime: TP=4, `--kv-cache-dtype
 fp8_ds_mla`, `--reasoning-parser glm45 --tool-call-parser glm47
 --enable-auto-tool-choice`, cudagraph FULL, `gpu-memory-utilization 0.93`.
 
+For MTP speculative decode, pair it with the matching draft built for this
+target: [`CosmicRaisins/GLM-5.2-MTP-INT4-aligned`](https://huggingface.co/CosmicRaisins/GLM-5.2-MTP-INT4-aligned).
+
 ## License
 
 MIT, inherited. Retain upstream notices on redistribution. GLM-5.2 © Z.ai (MIT);

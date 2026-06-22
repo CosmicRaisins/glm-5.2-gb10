@@ -1,14 +1,17 @@
-# k=3 MTP sweep point — matches the agent's k4/k5 prod-b12x conditions EXACTLY except
-# num_speculative_tokens=3. Hypothesis: accepted/step saturates ~1.9, so TG should rise
-# vs k=4 (20.73) / k=5 (19.22). Same b12x image, MNBT 4096, cudagraph FULL, prefix-cache,
-# fp8 KV, ctx 131072, gmu 0.92 → directly comparable to the k4/k5 table.
+# GLM-5.2-AWQ-15pct production serving recipe — 4× GB10 / DGX Spark (sm_121), TP=4.
+# Launched by spark-vllm-docker's run-recipe.sh with the SHORT recipe name (see
+# bootstrap.sh / README). MTP k=3, cudagraph FULL, prefix caching, fp8 KV, 256k ctx.
+#
+# EDIT FOR YOUR CLUSTER: `cluster_nodes` and the NCCL_IB_HCA / NCCL_SOCKET_IFNAME /
+# GLOO_SOCKET_IFNAME values below are specific to my RoCE fabric. Set them for yours
+# (HCAs via `ibdev2netdev`, interface names via `ip link`).
 recipe_version: "1"
 name: GLM-5.2-AWQ-prod-256k
-description: GLM-5.2-AWQ TP=4 mp, b12x image, MTP k=3, cudagraph FULL, prefix-cache
+description: GLM-5.2-AWQ TP=4 mp, b12x image, MTP k=3, cudagraph FULL, prefix-cache, 256k
 raw_entrypoint: true
 shared_weights_nfs: true
-cluster_nodes: [192.168.200.12, 192.168.200.13, 192.168.200.14, 192.168.200.15]
-container: vllm-node-tf5-glm52-b12x:probe-20260621
+cluster_nodes: [192.168.200.12, 192.168.200.13, 192.168.200.14, 192.168.200.15]  # EDIT: your rail IPs, rank 0 first
+container: vllm-node-tf5-glm52-b12x:probe   # must match IMAGE_TAG in bootstrap.sh
 model: /cache/huggingface/hub/glm52-awq-15pct
 cluster_only: true
 defaults:
@@ -29,9 +32,9 @@ env:
   TORCH_CUDA_ARCH_LIST: "12.1a"
   NCCL_NET: IB
   NCCL_IB_DISABLE: "0"
-  NCCL_IB_HCA: "rocep1s0f0,roceP2p1s0f0"
-  NCCL_SOCKET_IFNAME: "enP7s7,enp1s0f0np0,enP2p1s0f0np0"
-  GLOO_SOCKET_IFNAME: "enp1s0f0np0"
+  NCCL_IB_HCA: "rocep1s0f0,roceP2p1s0f0"                   # EDIT: your RoCE/IB HCAs (ibdev2netdev)
+  NCCL_SOCKET_IFNAME: "enP7s7,enp1s0f0np0,enP2p1s0f0np0"   # EDIT: your interfaces (ip link)
+  GLOO_SOCKET_IFNAME: "enp1s0f0np0"                        # EDIT: your rail-1 interface
   NCCL_IB_GID_INDEX: "3"
   NCCL_CROSS_NIC: "1"
   NCCL_CUMEM_ENABLE: "0"
@@ -39,7 +42,7 @@ env:
   NCCL_DEBUG: WARN
 command: |
   vllm serve /cache/huggingface/hub/glm52-awq-15pct
-  --served-model-name glm-5.2-15pct --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-mtp-int4-aligned","method":"mtp","num_speculative_tokens":5,"attention_backend":"FLASHMLA_SPARSE"}}'
+  --served-model-name glm-5.2-15pct --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-mtp-int4-aligned","method":"mtp","num_speculative_tokens":3,"attention_backend":"FLASHMLA_SPARSE"}}'
   --tensor-parallel-size 4 --pipeline-parallel-size 1
   --max-model-len 262144 --max-num-seqs 1 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.93 --kv-cache-dtype fp8_ds_mla
   --distributed-executor-backend mp --compilation-config '{{"cudagraph_mode":"FULL"}}'

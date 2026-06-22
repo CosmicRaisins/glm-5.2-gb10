@@ -21,6 +21,10 @@ then run it from the head node. It verifies the cluster, builds the pinned vLLM
 image, mounts the Triton kernels, installs NCCL 2.30.4, fetches the weights, and
 launches. Serves an OpenAI-compatible API on `:8210` as `glm-5.2-15pct`.
 
+The serving recipe (`recipes/glm52-awq-15pct-prod.yaml`) also carries RoCE fabric
+values (HCA + interface names, node IPs) hardcoded to my cluster — set those for
+yours. The lines are marked `EDIT`.
+
 ## Contents
 
 - `kernels/` — portable Triton sparse-MLA (vLLM/jasl, Apache-2.0, modified — `CHANGES.md`)
