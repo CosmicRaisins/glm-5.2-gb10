@@ -25,6 +25,13 @@ The serving recipe (`recipes/glm52-awq-15pct-prod.yaml`) also carries RoCE fabri
 values (HCA + interface names, node IPs) hardcoded to my cluster — set those for
 yours. The lines are marked `EDIT`.
 
+## Weights
+
+- AWQ-INT4, 15%-pruned: https://huggingface.co/CosmicRaisins/GLM-5.2-AWQ-INT4-15pct
+- MTP draft: https://huggingface.co/CosmicRaisins/GLM-5.2-MTP-INT4-aligned
+
+`bootstrap.sh` pulls both.
+
 ## Contents
 
 - `kernels/` — portable Triton sparse-MLA (vLLM/jasl, Apache-2.0, modified — `CHANGES.md`)
