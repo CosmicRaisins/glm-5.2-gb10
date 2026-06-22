@@ -28,12 +28,11 @@ NFS_HOST_RAIL="192.168.200.14"
 WEIGHTS_RO_DIR="/srv/hf/hub"          # exported dir, mounted on every node
 HF_HOME="/srv/hf"                     # HF_HOME on the NFS host
 
-# HuggingFace repo IDs.
-#   PRUNED_REPO: the 15%-pruned AWQ you publish from this stack (see model-card/).
-#   Until you've uploaded it, set this to your own repo id.
-PRUNED_REPO="CosmicRaisins/GLM-5.2-AWQ-INT4-15pct"   # TODO: set after upload
-BASE_AWQ_REPO="cyankiwi/GLM-5.2-AWQ-INT4"                 # fallback / to re-prune
-MTP_DRAFT_REPO="CosmicRaisins/GLM-5.2-MTP-INT4-aligned"  # TODO: set after upload
+# HuggingFace repo IDs. Defaults pull the published weights for this stack; point
+# them at your own repos only if you re-prune / rebuild the draft yourself.
+PRUNED_REPO="CosmicRaisins/GLM-5.2-AWQ-INT4-15pct"        # published 15%-pruned AWQ
+BASE_AWQ_REPO="cyankiwi/GLM-5.2-AWQ-INT4"                 # unpruned base, if you re-prune
+MTP_DRAFT_REPO="CosmicRaisins/GLM-5.2-MTP-INT4-aligned"   # published MTP draft
 
 # vLLM build: use eugr/spark-vllm-docker (NOT vendored here). Pin the ref.
 SPARK_VLLM_DOCKER="$HOME/spark-vllm-docker"     # clone of eugr/spark-vllm-docker
