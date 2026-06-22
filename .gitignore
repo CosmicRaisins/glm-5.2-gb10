@@ -1,0 +1,22 @@
+# Weights are pulled from HuggingFace by bootstrap.sh, never committed.
+*.safetensors
+*.bin
+*.gguf
+hub/
+weights/
+models--*/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local / scratch
+*.log
+*.out
+*.bak
+*.bak.*
+.DS_Store
+/tmp/
+scratch/

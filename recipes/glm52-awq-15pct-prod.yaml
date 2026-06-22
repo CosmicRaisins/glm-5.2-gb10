@@ -1,0 +1,45 @@
+# k=3 MTP sweep point — matches the agent's k4/k5 prod-b12x conditions EXACTLY except
+# num_speculative_tokens=3. Hypothesis: accepted/step saturates ~1.9, so TG should rise
+# vs k=4 (20.73) / k=5 (19.22). Same b12x image, MNBT 4096, cudagraph FULL, prefix-cache,
+# fp8 KV, ctx 131072, gmu 0.92 → directly comparable to the k4/k5 table.
+recipe_version: "1"
+name: GLM-5.2-AWQ-prod-256k
+description: GLM-5.2-AWQ TP=4 mp, b12x image, MTP k=3, cudagraph FULL, prefix-cache
+raw_entrypoint: true
+shared_weights_nfs: true
+cluster_nodes: [192.168.200.12, 192.168.200.13, 192.168.200.14, 192.168.200.15]
+container: vllm-node-tf5-glm52-b12x:probe-20260621
+model: /cache/huggingface/hub/glm52-awq-15pct
+cluster_only: true
+defaults:
+  port: 8210
+env:
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  LD_PRELOAD: /cache/huggingface/hub/nccl-2.30.4/libnccl.so.2
+  HF_HOME: /cache/huggingface
+  TRITON_CACHE_DIR: /cache/huggingface/.tritoncache
+  HF_HUB_OFFLINE: "1"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "256"
+  GLM52_BIND_HOST_TRITON: "1"
+  GLM52_MQA_LOGITS_TRITON: "1"
+  GLM52_PAGED_MQA_TRITON: "1"
+  GLM52_PAGED_MQA_TOPK_CHUNK_SIZE: "8192"
+  GLM52_B12X_MLA: "1"
+  TORCH_CUDA_ARCH_LIST: "12.1a"
+  NCCL_NET: IB
+  NCCL_IB_DISABLE: "0"
+  NCCL_IB_HCA: "rocep1s0f0,roceP2p1s0f0"
+  NCCL_SOCKET_IFNAME: "enP7s7,enp1s0f0np0,enP2p1s0f0np0"
+  GLOO_SOCKET_IFNAME: "enp1s0f0np0"
+  NCCL_IB_GID_INDEX: "3"
+  NCCL_CROSS_NIC: "1"
+  NCCL_CUMEM_ENABLE: "0"
+  NCCL_IGNORE_CPU_AFFINITY: "1"
+  NCCL_DEBUG: WARN
+command: |
+  vllm serve /cache/huggingface/hub/glm52-awq-15pct
+  --served-model-name glm-5.2-15pct --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-mtp-int4-aligned","method":"mtp","num_speculative_tokens":5,"attention_backend":"FLASHMLA_SPARSE"}}'
+  --tensor-parallel-size 4 --pipeline-parallel-size 1
+  --max-model-len 262144 --max-num-seqs 1 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.93 --kv-cache-dtype fp8_ds_mla
+  --distributed-executor-backend mp --compilation-config '{{"cudagraph_mode":"FULL"}}'

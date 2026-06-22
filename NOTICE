@@ -1,0 +1,58 @@
+glm-5.2-gb10
+Copyright 2026 CosmicRaisins and contributors
+
+This product includes and builds upon software and model weights developed by
+third parties. Their notices are reproduced below as required by their
+respective licenses (Apache-2.0 Section 4(d), and the MIT copyright-notice
+requirement). See ATTRIBUTION.md / docs/retrospective.md for the full story.
+
+================================================================================
+Sparse-MLA / FlashMLA Triton kernels (kernels/)            License: Apache-2.0
+================================================================================
+  # SPDX-License-Identifier: Apache-2.0
+  # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+  These files originate from the vLLM project (https://github.com/vllm-project/vllm),
+  with the portable sm12x sparse-MLA / DeepGEMM-fallback kernel work carried by
+  jasl (jasl/vllm fork). They have been MODIFIED for this project — see CHANGES.md
+  for the list of changes (required by Apache-2.0 Section 4(b)). The original
+  SPDX/copyright headers are retained in each file.
+
+================================================================================
+GLM-5.2 (base model)                                        License: MIT
+================================================================================
+  GLM-5.2 by Z.ai / Zhipu AI — https://huggingface.co/zai-org/GLM-5.2
+  Copyright (c) Z.ai / Zhipu AI. Released under the MIT License.
+  Architecture (GlmMoeDsa: MoE + DeepSeek-style sparse attention + MTP), the
+  native multi-token-prediction head, and the glm45/glm47 chat formats are
+  Z.ai's work.
+
+================================================================================
+GLM-5.2-AWQ-INT4 (direct parent of the pruned weights)      License: MIT
+================================================================================
+  cyankiwi/GLM-5.2-AWQ-INT4 — https://huggingface.co/cyankiwi/GLM-5.2-AWQ-INT4
+  Copyright (c) cyankiwi. Released under the MIT License.
+  The activation-aware INT4 (compressed-tensors W4A16) quantization this project
+  prunes and serves is cyankiwi's work.
+
+================================================================================
+Referenced (not vendored) components
+================================================================================
+  - spark-vllm-docker build harness and llama-benchy — eugr
+      https://github.com/eugr/spark-vllm-docker  /  eugr/llama-benchy
+  - deepseek-v4-flash-gb10 runbook (NCCL 2.30.4 + RDMA/IPC_LOCK passthrough +
+    bf16-indexer gotchas) — hazyumps
+  - B12X kernel lineage / raw-entrypoint serving pattern — aidendle94 /
+    local-inference-lab
+  - GLM-5.2 consumer-Blackwell vllm-patches reference — brandonmmusic-max /
+    voipmonitor
+  - NVFP4-REAP checkpoints + REAP MTP draft reference — 0xSero
+  - NCCL 2.30.4 aarch64 build, CUDA 13 / FlashInfer / cutlass, DGX Spark GB10 —
+    NVIDIA
+  - vLLM (GlmMoeDsa, Marlin WNA16, b12x MoE, the glm45/glm47 parsers, the
+    NVFP4 oracle) — the vLLM project
+
+REAP (CerebrasResearch) was evaluated for the expert prune and rejected as
+infeasible on this hardware; it is NOT used in the production path. The 15%
+prune here is an original, data-free method (see prune/awq_surgery.py and
+docs/retrospective.md).
