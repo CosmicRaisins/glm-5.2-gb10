@@ -103,6 +103,8 @@ ENVV=(
 # GLM52_BIND_HOST_TRITON=1). Paths are inside the image's vLLM install.
 MLA="/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla"
 OPS="/usr/local/lib/python3.12/dist-packages/vllm/v1/attention/ops/deepseek_v4_ops"
+LAYERS="/usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers"
+MODELS="/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models"
 KMOUNTS=(
   -v "$KERNELS_DIR/sparse_mla_kernels.py:$MLA/sparse_mla_kernels.py:ro"
   -v "$KERNELS_DIR/sparse_mla_env.py:$MLA/sparse_mla_env.py:ro"
@@ -112,6 +114,9 @@ KMOUNTS=(
   -v "$KERNELS_DIR/sm12x_deep_gemm_fallbacks.py:$OPS/sm12x_deep_gemm_fallbacks.py:ro"
   -v "$KERNELS_DIR/sm12x_mqa.py:$OPS/sm12x_mqa.py:ro"
   -v "$KERNELS_DIR/b12x_sparse_helpers.py:$OPS/b12x_sparse_helpers.py:ro"
+  # upstream vLLM #46862: fused indexer Q rope+fp8-quant (fused_indexer_q_rope_quant)
+  -v "$KERNELS_DIR/sparse_attn_indexer.py:$LAYERS/sparse_attn_indexer.py:ro"
+  -v "$KERNELS_DIR/deepseek_v2.py:$MODELS/deepseek_v2.py:ro"
 )
 
 # docker run base — IB passthrough is REQUIRED (without --device=/dev/infiniband

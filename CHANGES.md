@@ -40,6 +40,20 @@ extension does not support.
    what took cold-prefill from ~336 to ~508 tok/s and flattened the
    depth curve.
 
+## Vendored from upstream vLLM (unmodified)
+
+`kernels/sparse_attn_indexer.py` and `kernels/deepseek_v2.py` are vendored from the
+vLLM project carrying upstream PR **#46862** (`fused_indexer_q_rope_quant`, by
+yewentao256) — a Triton kernel that fuses the indexer's Q rope + fp8 quant + weight
+scale into a single launch, plus its `use_fused_indexer_q` call-site in the indexer
+forward. Vendored **unmodified** beyond the version pin to the image's vLLM; their
+SPDX/copyright headers are retained. Not original to this repo (see `ATTRIBUTION.md`).
+
+Measured on GB10 (TP=4, glm-5.2 quanttrio, single config; **cross-harness,
+UNVERIFIED**): prefill flat; decode marginally faster (~0–1 tok/s). The fusion trims
+per-step kernel-launch overhead, a larger fraction of decode (bs=1) than of the
+GEMM-dominated prefill.
+
 ## Original, non-derivative files (not modified third-party code)
 
 The following are **original works of this project**, not derived from the
