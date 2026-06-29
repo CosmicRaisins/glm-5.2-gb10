@@ -13,6 +13,10 @@ sequence of fixes is in `docs/retrospective.md`.
   `IPC_LOCK` passthrough, bf16-indexer.
 - **vLLM project** — `GlmMoeDsa`, Marlin WNA16, b12x MoE (#40082), the parsers,
   the NVFP4 oracle. (Apache-2.0)
+- **yewentao256 / vLLM** — `fused_indexer_q_rope_quant` (upstream PR #46862): the
+  fused indexer Q rope+fp8-quant Triton kernel, vendored in
+  `kernels/sparse_attn_indexer.py` with its call-site in `kernels/deepseek_v2.py`.
+  Not original to this repo. (Apache-2.0)
 - **eugr** — `spark-vllm-docker` build harness and `llama-benchy`.
 - **aidendle94 / local-inference-lab** — B12X kernel lineage, raw-entrypoint
   serving pattern.
