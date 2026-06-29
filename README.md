@@ -82,7 +82,7 @@ silently.)
 
 `bootstrap.sh` pulls both.
 
-**Higher-context alternative — QuantTrio Int4-Int8Mix, 10%-pruned.** A lighter 10%
+**Higher-context alternative — [QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix), 10%-pruned.** A lighter 10%
 expert prune in QuantTrio's mixed Int4/Int8 format fits **~340k context** on the same
 4× GB10 — a *lighter* prune than the AWQ-INT4 above (15%) yet *more* context than its
 ~256k. The kernels and launch path here are weight-agnostic: point `WEIGHTS_DIR` at the
@@ -108,6 +108,18 @@ Measured on my 4× GB10 setup (TP=4, MTP k=3, llama-benchy generic corpus):
 | 0   | 20.2 t/s | 535 t/s |
 | 8K  | 21.9 t/s | 517 t/s |
 | 32K | 21.2 t/s | 476 t/s |
+
+**QuantTrio Int4-Int8Mix (10%-pruned), MTP k=4, with the upstream #46862 fused
+indexer** (llama-benchy, coherent corpus, tg=1000, ctx 327680):
+
+| Depth | Decode (tg) | Prefill (pp) |
+|---|---|---|
+| 0   | 21.4 t/s | 498 t/s |
+| 16K | 23.2 t/s | 464 t/s |
+| 32K | 22.6 t/s | 442 t/s |
+
+The #46862 fused indexer left prefill flat and made decode marginally faster
+(~0–1 t/s) vs the non-fused path — single config, cross-harness, unverified.
 
 Numbers will vary with hardware and workload. In my tests decode is
 memory-bandwidth-bound and prefill is bound by the sparse-MLA / indexer kernels
