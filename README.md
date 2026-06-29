@@ -82,6 +82,12 @@ silently.)
 
 `bootstrap.sh` pulls both.
 
+**Higher-context alternative — QuantTrio Int4-Int8Mix, 10%-pruned.** A lighter 10%
+expert prune in QuantTrio's mixed Int4/Int8 format fits **~340k context** on the same
+4× GB10 — a *lighter* prune than the AWQ-INT4 above (15%) yet *more* context than its
+~256k. The kernels and launch path here are weight-agnostic: point `WEIGHTS_DIR` at the
+checkpoint and set `--max-model-len` accordingly. Coherence-checked, not benchmarked.
+
 ## Contents
 
 - `bootstrap.sh` — end-to-end bring-up (build → kernels → NCCL → weights → launch)
