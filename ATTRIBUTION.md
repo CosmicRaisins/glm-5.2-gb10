@@ -20,6 +20,11 @@ sequence of fixes is in `docs/retrospective.md`.
 - **eugr** — `spark-vllm-docker` build harness and `llama-benchy`.
 - **aidendle94 / local-inference-lab** — B12X kernel lineage, raw-entrypoint
   serving pattern.
+- **back199640** (GB10 user forum) — the fp8 decode head-padding fix
+  (`_compute_fp8_decode_padded_heads`: pad to 32, not 64, when heads/rank ≤ 32),
+  vendored in `kernels/flashmla_sparse.py`. At TP=4 GLM-5.2 has 16 heads/rank, so
+  the old 64-pad wasted 75% of the fp8 attention compute; a ~+28–34% prefill win
+  measured on GB10.
 - **0xSero** — NVFP4-REAP checkpoints, MTP layer-78 reference.
 - **brandonmmusic-max / voipmonitor** — GLM-5.2 consumer-Blackwell patches
   reference.

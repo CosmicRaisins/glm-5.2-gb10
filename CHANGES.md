@@ -40,6 +40,16 @@ extension does not support.
    what took cold-prefill from ~336 to ~508 tok/s and flattened the
    depth curve.
 
+5. **fp8 decode head-padding 64 → 32** (`flashmla_sparse.py`,
+   `_compute_fp8_decode_padded_heads`): the raw FlashMLA fp8 decode kernel accepts
+   only `h_q ∈ {64, 128}`, but the b12x / Triton sm12x path accepts `%16`/`%32`
+   alignment. At TP=4 GLM-5.2 has 16 heads/rank, so padding to 64 zero-pads 75% of
+   the fp8 attention compute; pad to 32 instead. Bench (GB10 4-node TP=4,
+   QuantTrio, MTP k=4, cudagraph FULL, kv fp8_ds_mla, llama-benchy) vs the 64-pad
+   baseline — prefill **+28–34%** (d0 666 vs 498, d8k 671 vs 509, d32k 592 vs
+   461), decode +4–12%; output coherence verified. Fix credited to **back199640**
+   (GB10 user forum), not original to this repo (see `ATTRIBUTION.md`).
+
 ## Vendored from upstream vLLM (unmodified)
 
 `kernels/sparse_attn_indexer.py` and `kernels/deepseek_v2.py` are vendored from the

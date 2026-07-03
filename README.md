@@ -118,6 +118,21 @@ indexer** (llama-benchy, coherent corpus, tg=1000, ctx 327680):
 | 16K | 23.2 t/s | 464 t/s |
 | 32K | 22.6 t/s | 442 t/s |
 
+**+ fp8 decode head-padding 32** (back199640; same QuantTrio k=4 config, cudagraph
+FULL, fp8_ds_mla, llama-benchy, tg=512, ctx 327680):
+
+| Depth | Decode (tg) | Prefill (pp) |
+|---|---|---|
+| 0   | 22.8 t/s | 666 t/s |
+| 8K  | 23.2 t/s | 671 t/s |
+| 32K | 23.4 t/s | 592 t/s |
+
+Padding the fp8 sparse-MLA decode heads to 32 instead of 64 (16 real heads/rank at
+TP=4, so the old pad was ~75% zeros) lifts **prefill +28–34%** at comparable depths
+with a small decode gain. A same-methodology A/B control isn't run yet, but the
+uplift matches back199640's independently-reported +28% prefill. See `CHANGES.md` #5
+and `ATTRIBUTION.md`.
+
 The #46862 fused indexer left prefill flat and made decode marginally faster
 (~0–1 t/s) vs the non-fused path — single config, cross-harness, unverified.
 

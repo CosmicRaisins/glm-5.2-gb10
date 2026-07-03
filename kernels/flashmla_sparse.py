@@ -544,8 +544,21 @@ class FlashMLASparseMetadataBuilder(AttentionMetadataBuilder[FlashMLASparseMetad
 class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
     @staticmethod
     def _compute_fp8_decode_padded_heads(num_heads: int) -> int:
-        # FP8 decode kernel only supports h_q = 64 or 128
-        # Compute padded head count for decode
+        # Raw FlashMLA fp8 decode kernel supports h_q = 64 or 128 only, but the
+        # b12x / Triton sm12x sparse-MLA path used on GB10 (sm_121) accepts
+        # %16/%32 alignment. At high TP the per-rank head count is small
+        # (GLM-5.2: 64 heads -> 16/rank @ TP=4), so padding 16 -> 64 wastes 75%
+        # of the fp8 attention compute; padding to 32 instead halves it.
+        #
+        # GB10 4-node TP=4 bench (GLM-5.2 QuantTrio, in-ckpt MTP k=4, cudagraph
+        # FULL, kv fp8_ds_mla, llama-benchy) vs the 64-pad baseline, prefill tok/s:
+        #   depth 0    666 vs 498  (+34%)
+        #   depth 8k   671 vs 509  (+32%)
+        #   depth 32k  592 vs 461  (+28%)
+        # decode +4-12%; output coherence verified. Credit: back199640
+        # (GB10 user forum) for the 64->32 head-padding fix.
+        if num_heads <= 32:
+            return 32
         return 64 if num_heads <= 64 else 128
 
     def __init__(
