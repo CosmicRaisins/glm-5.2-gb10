@@ -546,17 +546,24 @@ class FlashMLASparseImpl(SparseMLAAttentionImpl[FlashMLASparseMetadata]):
     def _compute_fp8_decode_padded_heads(num_heads: int) -> int:
         # Raw FlashMLA fp8 decode kernel supports h_q = 64 or 128 only, but the
         # b12x / Triton sm12x sparse-MLA path used on GB10 (sm_121) accepts
-        # %16/%32 alignment. At high TP the per-rank head count is small
-        # (GLM-5.2: 64 heads -> 16/rank @ TP=4), so padding 16 -> 64 wastes 75%
-        # of the fp8 attention compute; padding to 32 instead halves it.
+        # %16 alignment (b12x_sparse_helpers falls to mg_n_hg=1 when %32 != 0).
+        # At high TP the per-rank head count is small (GLM-5.2: 64 heads ->
+        # 16/rank @ TP=4), so padding 16 -> 64 wasted 75% of the fp8 attention
+        # compute; padding to 16 (i.e. not at all at TP=4) eliminates it.
         #
         # GB10 4-node TP=4 bench (GLM-5.2 QuantTrio, in-ckpt MTP k=4, cudagraph
-        # FULL, kv fp8_ds_mla, llama-benchy) vs the 64-pad baseline, prefill tok/s:
-        #   depth 0    666 vs 498  (+34%)
-        #   depth 8k   671 vs 509  (+32%)
-        #   depth 32k  592 vs 461  (+28%)
-        # decode +4-12%; output coherence verified. Credit: back199640
-        # (GB10 user forum) for the 64->32 head-padding fix.
+        # FULL, kv fp8_ds_mla, llama-benchy) prefill tok/s, 64-pad -> 32 -> 16:
+        #   depth 0    498 -> 666 -> 722
+        #   depth 8k   509 -> 671 -> 736
+        #   depth 32k  461 -> 592 -> 626
+        # Decode is unchanged between 32 and 16 once normalized for spec-decode
+        # acceptance variance; output coherence verified at both. Credit:
+        # back199640 (GB10 user forum) for the original 64->32 fix; the 32->16
+        # step exploits the helper's mg_n_hg=1 path.
+        # WARNING: below 32 heads the raw-FlashMLA fallback (h_q 64/128) is no
+        # longer reachable -- b12x must be installed for the fp8 decode path.
+        if num_heads <= 16:
+            return 16
         if num_heads <= 32:
             return 32
         return 64 if num_heads <= 64 else 128
