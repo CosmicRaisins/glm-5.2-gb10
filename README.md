@@ -1,12 +1,16 @@
 # GLM-5.2 on DGX Spark (GB10, sm_121)
 
-Serves GLM-5.2 (744B/40B MoE, `GlmMoeDsa`) on a 4-node GB10 cluster at 256k
-context with MTP speculative decode. Getting it running on sm_121 meant porting
-the sparse-MLA attention off the Hopper-only `_flashmla_C` path and fixing several
-sm_121-specific bugs (see `docs/retrospective.md`).
+Serves GLM-5.2 (744B/40B MoE, `GlmMoeDsa`) on a 4-node GB10 cluster with MTP
+speculative decode. The reference config serves
+[QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix)
+(10%-pruned, in-checkpoint MTP k=4) at **327k context, ~720 t/s prefill / ~21–24 t/s
+decode** — see Performance. The original AWQ-INT4 15%-pruned setup is retained and
+still what `bootstrap.sh`/`launch.sh` bring up by default. Getting any of it running
+on sm_121 meant porting the sparse-MLA attention off the Hopper-only `_flashmla_C`
+path and fixing several sm_121-specific bugs (see `docs/retrospective.md`).
 
-The 15% expert prune is data-free and coherence-checked, **not** benchmarked.
-Treat quality as unverified.
+Both expert prunes (10% QuantTrio, 15% AWQ) are data-free and coherence-checked,
+**not** benchmarked for quality. Treat quality as unverified.
 
 ## Requirements
 
@@ -77,16 +81,19 @@ silently.)
 
 ## Weights
 
+**Primary — [QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix), 10%-pruned.**
+A lighter 10% expert prune in QuantTrio's mixed Int4/Int8 format fits **~340k of KV
+(327k served context)** on the same 4× GB10 — a *lighter* prune than the AWQ-INT4
+below (15%) yet *more* context than its ~256k, with INT8 attention. MTP is
+in-checkpoint (layer-78 nextn weights, k=4) — no separate draft model. The kernels
+and launch path are weight-agnostic: point `WEIGHTS_DIR` at the checkpoint and set
+`--max-model-len` accordingly, or use the flags in
+`recipes/glm52-quanttrio-10pct-prod.yaml`.
+
+Original AWQ config (preserved; `bootstrap.sh` pulls both of these):
+
 - AWQ-INT4, 15%-pruned: https://huggingface.co/CosmicRaisins/GLM-5.2-AWQ-INT4-15pct
 - MTP draft: https://huggingface.co/CosmicRaisins/GLM-5.2-MTP-INT4-aligned
-
-`bootstrap.sh` pulls both.
-
-**Higher-context alternative — [QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix), 10%-pruned.** A lighter 10%
-expert prune in QuantTrio's mixed Int4/Int8 format fits **~340k context** on the same
-4× GB10 — a *lighter* prune than the AWQ-INT4 above (15%) yet *more* context than its
-~256k. The kernels and launch path here are weight-agnostic: point `WEIGHTS_DIR` at the
-checkpoint and set `--max-model-len` accordingly. Coherence-checked, not benchmarked.
 
 ## Contents
 
@@ -101,7 +108,38 @@ checkpoint and set `--max-model-len` accordingly. Coherence-checked, not benchma
 
 ## Performance
 
-Measured on my 4× GB10 setup (TP=4, MTP k=3, llama-benchy generic corpus):
+**Reference config — QuantTrio Int4-Int8Mix (10%-pruned), in-checkpoint MTP k=4,
+fp8 decode head-padding 16, cudagraph FULL, kv fp8_ds_mla** (llama-benchy, tg=512,
+ctx 327680):
+
+| Depth | Decode (tg) | Prefill (pp) |
+|---|---|---|
+| 0   | 20.9 t/s | 722 t/s |
+| 8K  | 22.1 t/s | 736 t/s |
+| 32K | 20.1 t/s | 626 t/s |
+
+Decode on this model is dominated by MTP acceptance, which swings a few t/s
+between bench runs on the sampled corpus — treat decode as ~21–24 t/s; the
+padding change is decode-neutral once normalized for acceptance (prefill is
+acceptance-independent). With b12x master (≥ `80eb49b`, GLM sparse-decode
+optimizations; the mods here pin `b12x==0.23.0`) depth-0 decode measured
+24.0 ± 0.2 t/s on this config.
+
+**fp8 head-padding progression** (same config throughout; 16 real heads/rank at
+TP=4): the stock kernel padded queries to 64 heads — 75% zeros. Padding to 32
+(back199640, GB10 forum) lifted prefill +28–34%; padding to 16 — i.e. not at all,
+via the b12x `mg_n_hg=1` path — adds another +6–10%. Prefill t/s by pad width:
+
+| Depth | pad 64 | pad 32 | pad 16 |
+|---|---|---|---|
+| 0   | 498 | 666 | **722** |
+| 8K  | 509 | 671 | **736** |
+| 32K | 461 | 592 | **626** |
+
+See `CHANGES.md` #5–6 and `ATTRIBUTION.md`.
+
+**Original AWQ-INT4 15%-pruned config** (TP=4, separate MTP draft k=3,
+llama-benchy generic corpus; predates the head-padding fixes):
 
 | Depth | Decode (tg) | Prefill (pp) |
 |---|---|---|
@@ -109,41 +147,21 @@ Measured on my 4× GB10 setup (TP=4, MTP k=3, llama-benchy generic corpus):
 | 8K  | 21.9 t/s | 517 t/s |
 | 32K | 21.2 t/s | 476 t/s |
 
-**QuantTrio Int4-Int8Mix (10%-pruned), MTP k=4, with the upstream #46862 fused
-indexer** (llama-benchy, coherent corpus, tg=1000, ctx 327680):
-
-| Depth | Decode (tg) | Prefill (pp) |
-|---|---|---|
-| 0   | 21.4 t/s | 498 t/s |
-| 16K | 23.2 t/s | 464 t/s |
-| 32K | 22.6 t/s | 442 t/s |
-
-**+ fp8 decode head-padding 32** (back199640; same QuantTrio k=4 config, cudagraph
-FULL, fp8_ds_mla, llama-benchy, tg=512, ctx 327680):
-
-| Depth | Decode (tg) | Prefill (pp) |
-|---|---|---|
-| 0   | 22.8 t/s | 666 t/s |
-| 8K  | 23.2 t/s | 671 t/s |
-| 32K | 23.4 t/s | 592 t/s |
-
-Padding the fp8 sparse-MLA decode heads to 32 instead of 64 (16 real heads/rank at
-TP=4, so the old pad was ~75% zeros) lifts **prefill +28–34%** at comparable depths
-with a small decode gain. A same-methodology A/B control isn't run yet, but the
-uplift matches back199640's independently-reported +28% prefill. See `CHANGES.md` #5
-and `ATTRIBUTION.md`.
-
-The #46862 fused indexer left prefill flat and made decode marginally faster
-(~0–1 t/s) vs the non-fused path — single config, cross-harness, unverified.
+The upstream #46862 fused indexer (vendored) left prefill flat and made decode
+marginally faster (~0–1 t/s) vs the non-fused path — single config,
+cross-harness, unverified.
 
 Numbers will vary with hardware and workload. In my tests decode is
 memory-bandwidth-bound and prefill is bound by the sparse-MLA / indexer kernels
 rather than the MoE GEMM (an NVFP4 MoE swap changed prefill by nothing) — but I
 haven't stress-tested that conclusion broadly.
 
-**MTP draft depth (k):** k=3 benchmarked best for me on a synthetic corpus, but
-Z.ai recommends k=5, and I haven't compared 3 vs 5 in real-world usage yet. The
-recipe ships k=3 — treat it as a starting point, not a settled answer.
+**MTP draft depth (k):** on the QuantTrio in-checkpoint MTP config, k=4 is the
+measured optimum. k=5 (Z.ai's recommendation) benchmarked as a net regression
+here: position-5 acceptance is low and each extra position costs a sequential
+drafter pass plus a wider MoE expert union per verify step on a
+bandwidth-bound decode (−14% engine steps/s at depth 0). The AWQ config's
+separate-draft recipe ships k=3, which benchmarked best for that setup.
 
 ## License
 

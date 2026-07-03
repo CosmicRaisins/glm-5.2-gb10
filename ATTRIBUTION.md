@@ -24,7 +24,9 @@ sequence of fixes is in `docs/retrospective.md`.
   (`_compute_fp8_decode_padded_heads`: pad to 32, not 64, when heads/rank ≤ 32),
   vendored in `kernels/flashmla_sparse.py`. At TP=4 GLM-5.2 has 16 heads/rank, so
   the old 64-pad wasted 75% of the fp8 attention compute; a ~+28–34% prefill win
-  measured on GB10.
+  measured on GB10. The subsequent 32 → 16 step (`CHANGES.md` #6, zero padding at
+  TP=4 via the b12x `mg_n_hg=1` path, a further +6–10% prefill) is this project's
+  follow-up to their insight.
 - **0xSero** — NVFP4-REAP checkpoints, MTP layer-78 reference.
 - **brandonmmusic-max / voipmonitor** — GLM-5.2 consumer-Blackwell patches
   reference.

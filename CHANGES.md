@@ -50,6 +50,18 @@ extension does not support.
    461), decode +4–12%; output coherence verified. Fix credited to **back199640**
    (GB10 user forum), not original to this repo (see `ATTRIBUTION.md`).
 
+6. **fp8 decode head-padding 32 → 16** (`flashmla_sparse.py`,
+   `_compute_fp8_decode_padded_heads`): follow-up to #5 — the b12x glue
+   (`b12x_sparse_helpers.py`) accepts any `%16` head count and drops to
+   `mg_n_hg=1` when `%32 != 0`, so at TP=4 (16 heads/rank) the query needs no
+   padding at all. Same bench methodology as #5, prefill vs the 32-pad config:
+   **+6–10%** (d0 722 vs 666, d8k 736 vs 671, d32k 626 vs 592); cumulative vs
+   the original 64-pad baseline **+36–45%**. Decode unchanged once normalized
+   for spec-decode acceptance variance between runs; per-call attention time
+   0.26 → 0.165 ms; coherence verified. Note: below 32 heads the raw-FlashMLA
+   fallback (`h_q ∈ {64, 128}`) is unreachable — b12x is required for the fp8
+   decode path (it already was at 32-pad).
+
 ## Vendored from upstream vLLM (unmodified)
 
 `kernels/sparse_attn_indexer.py` and `kernels/deepseek_v2.py` are vendored from the
