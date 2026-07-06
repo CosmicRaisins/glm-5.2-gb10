@@ -1,169 +1,148 @@
 # GLM-5.2 on DGX Spark (GB10, sm_121)
 
-Serves GLM-5.2 (744B/40B MoE, `GlmMoeDsa`) on a 4-node GB10 cluster with MTP
-speculative decode. The reference config serves
+Serves GLM-5.2 (744B/40B MoE, `GlmMoeDsa`) on a 4-node GB10 cluster. The
+reference config serves the **unpruned**
 [QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix)
-(10%-pruned, in-checkpoint MTP k=4) at **327k context, ~720 t/s prefill / ~21–24 t/s
-decode** — see Performance. The original AWQ-INT4 15%-pruned setup is retained and
-still what `bootstrap.sh`/`launch.sh` bring up by default. Getting any of it running
-on sm_121 meant porting the sparse-MLA attention off the Hopper-only `_flashmla_C`
-path and fixing several sm_121-specific bugs (see `docs/retrospective.md`).
+(full 256 experts, 406 GB, in-checkpoint MTP) at **320k context, ~600 t/s
+prefill / ~22 t/s decode, flat to depth** via TP4 + decode-context-parallel
+(DCP2, KV sharded 2-way). No pruning, no quality compromise.
 
-Both expert prunes (10% QuantTrio, 15% AWQ) are data-free and coherence-checked,
-**not** benchmarked for quality. Treat quality as unverified.
+Context vs prefill is a dial — one flag (`--decode-context-parallel-size`):
+
+| Config | Weights | Context | Prefill (d0/8k/32k) | Decode | Recipe |
+|---|---|---|---|---|---|
+| **DCP2** (reference) | unpruned | **327,680** | 598 / 603 / 598 | ~22 flat | `glm52-quanttrio-unpruned-dcp2-320k.yaml` |
+| DCP4 | unpruned | **655,360** | ~430 flat | ~21 flat | `glm52-quanttrio-unpruned-dcp4-640k.yaml` |
+| No DCP (legacy stack) | 10%-pruned | 327,680 | 722 / 736 / 626 | ~21–24 | `glm52-quanttrio-10pct-prod.yaml` |
+
+**The trade-off:** DCP shards the MLA KV cache across ranks instead of
+replicating it (per-rank KV ÷ N ⇒ context × N), but prefill attention then pays
+a per-layer cross-rank LSE all-gather + reduce-scatter, so prefill falls
+roughly linearly with DCP degree: ~720 → ~600 → ~430 t/s. Decode is unaffected
+(~21–24 everywhere; it's MoE-bandwidth-bound). Without DCP the unpruned
+checkpoint only fits ~160k of KV — the no-DCP row uses the 10% expert prune to
+reach 327k, which is also the max-prefill option if you accept the prune (see
+Weights).
 
 ## Requirements
 
-4× GB10 / DGX Spark (sm_121, aarch64), a node-to-node RoCE fabric, and ~400 GB of
-weights reachable from every node. Not portable to single-GPU, x86, or datacenter
-Blackwell (sm_100).
+4× GB10 / DGX Spark (sm_121, aarch64), node-to-node RoCE, ~410 GB of weights on
+every node (or NFS). Not portable to single-GPU, x86, or datacenter Blackwell
+(sm_100).
+
+## Two stacks
+
+**DCP stack (reference).** Built from public sources; this repo's `kernels/`
+are *not* used (the branch's native `B12X_MLA_SPARSE` backend includes the
+sm_121 sparse-MLA work, head-padding included):
+
+- vLLM: [`local-inference-lab/vllm`](https://github.com/local-inference-lab/vllm)
+  branch `codex/dcp-globaltopk-sharddraft-defaults-20260622` @ `e232d26`,
+  **plus PR #72** (draft-DCP config propagation + GLM DCP draft path — without
+  it the drafter crashes with `requires topk_scores_buffer`), **plus**
+  `patches/draft-quant-packed-mapping.patch` (without it quantized-NextN drafts
+  silently build unquantized and MTP acceptance collapses).
+- b12x @ `9cd63a7` (`pip install --no-deps git+https://github.com/lukealonso/b12x@9cd63a7...`).
+- Non-negotiable launch requirements (all in the recipes):
+  - `--hf-overrides '{"index_topk_pattern":"FFFSSS…"}'` — 78 chars derived from
+    the checkpoint's `indexer_types` (`full`→`F`, `shared`→`S`). GLM-5.2 only
+    trains indexer weights on 22/78 layers; the QuantTrio config ships
+    `index_topk_pattern: null`, and without the override the other 56 layers
+    top-k through **uninitialized weights** — coherent under ~2k tokens
+    (top-k ≡ select-all), garbage beyond, MTP acceptance craters at depth.
+  - `VLLM_USE_V2_MODEL_RUNNER=1` (the DCP+MTP drafting path lives in the V2
+    runner; the V1 runner drops DCP from the draft config).
+  - `VLLM_USE_B12X_SPARSE_INDEXER=1`, `--attention-backend B12X_MLA_SPARSE`,
+    and the same backend pinned as `draft_attention_backend`.
+  - MTP k=3, `"quantization":"compressed-tensors"` and
+    `"draft_sample_method":"probabilistic"` in the speculative config.
+
+Full credit for the DCP branch, kernels, and the 640k demonstration: m9e /
+voipmonitor (vLLM branch, PR #72) and Zatz (GB10 forum, 655k single-boot
+result). Independently reproduced here: coherent with exact long-range
+retrieval at depth, MTP acceptance ~2.0–2.4 accepted/draft.
+
+**Legacy stack (no-DCP row; what `bootstrap.sh`/`launch.sh` bring up).** The
+original port: pinned dev190-era vLLM image plus this repo's Triton kernels.
+`kernels/` are the implementations; two patch steps from my
+[`eugr/spark-vllm-docker`](https://github.com/eugr/spark-vllm-docker) fork wire
+them in (bake with `RUN bash mods/<name>/run.sh`):
+
+- `mods/glm52-sm12x-sparse` — copies `kernels/` into the vLLM tree and
+  short-circuits the DeepGEMM-only paths to the `sm12x_*` fallbacks on
+  capability 120 (no `deep_gemm` shim; in-place wrapper patch).
+- `mods/glm52-b12x-sparse` — `pip install --no-deps b12x==0.23.0` + a
+  `fused_indexer` score-mode patch; provides the sparse-MLA decode path.
+
+**cudagraph note (legacy stack):** perf numbers use `cudagraph_mode: FULL`
+*with b12x installed* (its decode kernel is capture-safe). Without b12x, decode
+silently falls back to a Triton kernel that allocates under capture — FULL
+crashes with `cudaErrorStreamCaptureInvalidated`; use `PIECEWISE`.
 
 ## Run
 
-Edit the CONFIG block in `bootstrap.sh` (node IPs, weights location, HF repo ids),
-then run it from the head node. It verifies the cluster, builds the pinned vLLM
-image, deploys the Triton kernels, installs NCCL 2.30.4, fetches the weights to
-every node, and launches via `launch.sh`. Serves an OpenAI-compatible API on
-`:8210` as `glm-5.2-15pct`.
+Edit the CONFIG block in `bootstrap.sh` (node IPs, weights dir, HF repos), run
+from the head node: verifies the cluster, builds the image, deploys kernels,
+installs NCCL 2.30.4, fetches weights per node, launches via `launch.sh`.
+OpenAI-compatible API on `:8210`.
 
-**Launch is a plain `docker run`.** `launch.sh` starts the container on each node
-directly — no Ray, no shared filesystem, no external harness. Multi-node is vLLM's
-own mechanism (`--nnodes/--node-rank/--master-addr/--master-port`): workers come up
-headless, then the head serves the API. You can run it on its own once the image,
-kernels, and weights are in place; edit its CONFIG block (it mirrors `bootstrap.sh`)
-and preview the exact commands with `./launch.sh --dry-run`. Stop with `./launch.sh --stop`.
+`launch.sh` is a plain per-node `docker run` — no Ray, no shared FS, no
+harness; multi-node is vLLM's own `--nnodes/--node-rank/--master-addr`.
+`./launch.sh --dry-run` previews, `--stop` tears down. Weights just need to
+exist per node under `$WEIGHTS_DIR/hub/...` (NFS works; nothing requires it).
+Recipes and `launch.sh` carry RoCE fabric values hardcoded to my cluster —
+lines marked `EDIT`.
 
-Weights just need to be present on each node under the configured directory
-(`$WEIGHTS_DIR/hub/...`). `bootstrap.sh` fetches a per-node copy; if you have a
-shared mount, point `WEIGHTS_DIR` at it instead. Nothing requires NFS.
-
-The image build is not self-contained — it requires two `spark-vllm-docker` mods
-that are not vendored here. See **Image build** below before running `bootstrap.sh`.
-
-`launch.sh` (and the reference `recipes/glm52-awq-15pct-prod.yaml`) carry RoCE
-fabric values (HCA + interface names) hardcoded to my cluster — set those for
-yours. The lines are marked `EDIT`.
-
-## Image build — required vLLM mods (not vendored)
-
-The `kernels/` here are the *implementations*. They do not wire themselves into
-vLLM: two patch steps that live in my
-[`eugr/spark-vllm-docker`](https://github.com/eugr/spark-vllm-docker) fork are
-required and are **not** vendored in this repo. Build the image at the pinned
-ref, then apply both mods (bake them with `RUN bash mods/<name>/run.sh`, as
-`Dockerfile.glm52-consolidated` does, or pass `--apply-mod mods/<name>` to
-`launch-cluster.sh`):
-
-- **`mods/glm52-sm12x-sparse`** — copies the `kernels/` files into the vLLM tree
-  and patches `vllm/utils/deep_gemm.py` + `sparse_attn_indexer.py` in place. On
-  capability family 120 it short-circuits `fp8_fp4_mqa_logits` /
-  `fp8_fp4_paged_mqa_logits` / `tf32_hc_prenorm_gemm` to the `sm12x_*` fallbacks
-  **before** the DeepGEMM `_missing()` gate, and rewrites the `SparseAttnIndexer`
-  constructor gate so sm_121 never requires `has_deep_gemm()`. There is **no
-  `deep_gemm` package shim** — the activation is this in-place wrapper patch.
-- **`mods/glm52-b12x-sparse`** — `pip install --no-deps b12x==0.23.0` plus a
-  `fused_indexer` score-mode patch. This provides the `b12x` package that the
-  sparse-MLA **decode** path (`b12x_sparse_helpers.py`) calls first.
-
-**cudagraph note (important):** my perf numbers use `cudagraph_mode: FULL` *with
-b12x installed*. The b12x decode kernel is cudagraph-capture-safe. If b12x is
-absent, `_fp8_flash_mla_kernel` silently falls back to the Triton
-`flash_mla_with_kvcache` decode kernel, which does unconditional
-`torch.full(..., device=...)` allocations that are illegal under graph capture —
-so FULL capture crashes with `cudaErrorStreamCaptureInvalidated`. Without b12x,
-run `cudagraph_mode: PIECEWISE`. (The `b12x` import warning is `warning_once`, so
-it is emitted once during prefill warmup and then suppressed — decode falls back
-silently.)
-
-`build-glm52-awq.sh` builds the base image at the pinned ref;
-`Dockerfile.glm52-consolidated` layers `glm52-sm12x-sparse` on top. Apply
-`glm52-b12x-sparse` the same way for the `-b12x` image the recipe expects.
+For the DCP configs, build the image from the DCP-stack pins above, then use
+the corresponding recipe's flags/env with the same launcher. Clear page caches
+on every node before large launches (`echo 3 > /proc/sys/vm/drop_caches`) —
+vLLM's startup free-memory guard will otherwise refuse at 0.90 gmu.
 
 ## Weights
 
-**Primary — [QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix), 10%-pruned.**
-A lighter 10% expert prune in QuantTrio's mixed Int4/Int8 format fits **~340k of KV
-(327k served context)** on the same 4× GB10 — a *lighter* prune than the AWQ-INT4
-below (15%) yet *more* context than its ~256k, with INT8 attention. MTP is
-in-checkpoint (layer-78 nextn weights, k=4) — no separate draft model. The kernels
-and launch path are weight-agnostic: point `WEIGHTS_DIR` at the checkpoint and set
-`--max-model-len` accordingly, or use the flags in
-`recipes/glm52-quanttrio-10pct-prod.yaml`.
+- **Unpruned (reference):** [QuantTrio/GLM-5.2-Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix)
+  — 256 experts, w4a16/w8a16, in-checkpoint MTP (layer-78 nextn).
+- **10%-pruned** (no-DCP / max-prefill option): derived from the same
+  checkpoint by data-free expert pruning (see `prune/` for the method).
+  Broadly capable, but fine-grained instruction adherence
+  measurably degrades: with a standing instruction to end every generation
+  with an exact phrase, the unpruned checkpoint reproduces it verbatim; the
+  pruned one includes the phrase but slightly alters its wording nearly every
+  time. Treat the prune as a capability trade, not a free lunch.
+- Legacy AWQ config (preserved): [AWQ-INT4 15%-pruned](https://huggingface.co/CosmicRaisins/GLM-5.2-AWQ-INT4-15pct)
+  + [separate MTP draft](https://huggingface.co/CosmicRaisins/GLM-5.2-MTP-INT4-aligned).
 
-Original AWQ config (preserved; `bootstrap.sh` pulls both of these):
+## Performance notes
 
-- AWQ-INT4, 15%-pruned: https://huggingface.co/CosmicRaisins/GLM-5.2-AWQ-INT4-15pct
-- MTP draft: https://huggingface.co/CosmicRaisins/GLM-5.2-MTP-INT4-aligned
+Reference DCP2 numbers above: llama-benchy, coherent corpus, pp2048/tg512,
+runs 3, ctx 327680, MTP k=3 (~2.0–2.4 accepted/draft; decode swings a few t/s
+with acceptance between runs). DCP4 measured 430/428 prefill at d8k/d32k and
+~21 decode flat; community result on the same stack holds 19.6–25.7 decode to
+638k depth (TTFT at that depth is ~24 min — deep-context prefill is the cost).
+
+**fp8 head-padding progression** (legacy stack; 16 real heads/rank at TP=4):
+stock kernel padded queries to 64 heads (75% zeros) → pad-32 (+28–34% prefill)
+→ pad-16/none via b12x `mg_n_hg=1` (+6–10% more): 498→666→722 t/s at d0. The
+DCP branch has this natively. See `CHANGES.md` #5–6, `ATTRIBUTION.md`.
+
+**MTP draft depth:** k=4 measured optimum for in-checkpoint MTP on the legacy
+stack; k=5 regresses (−14% steps/s at d0 — low position-5 acceptance, wider
+expert union per verify). The DCP stack ships k=3 (matches the upstream
+branch's tuning). The AWQ separate-draft recipe ships k=3.
+
+Prefill is bound by sparse-MLA attention + indexer, not MoE GEMM (an NVFP4 MoE
+swap moved prefill by nothing); decode is memory-bandwidth-bound.
 
 ## Contents
 
-- `bootstrap.sh` — end-to-end bring-up (build → kernels → NCCL → weights → launch)
-- `launch.sh` — self-contained per-node `docker run` launcher (no Ray, no shared FS)
-- `kernels/` — portable Triton sparse-MLA (vLLM/jasl, Apache-2.0, modified — `CHANGES.md`)
-- `prune/awq_surgery.py` — the data-free 15% expert prune
-- `mtp/` — separate-draft MTP reconstruction
-- `recipes/` — the serving spec (flags + env; mirrored by `launch.sh`)
-- `model-card/` — HuggingFace card for the pruned weights
-- `docs/retrospective.md` — every fix, with attribution
-
-## Performance
-
-**Reference config — QuantTrio Int4-Int8Mix (10%-pruned), in-checkpoint MTP k=4,
-fp8 decode head-padding 16, cudagraph FULL, kv fp8_ds_mla** (llama-benchy, tg=512,
-ctx 327680):
-
-| Depth | Decode (tg) | Prefill (pp) |
-|---|---|---|
-| 0   | 20.9 t/s | 722 t/s |
-| 8K  | 22.1 t/s | 736 t/s |
-| 32K | 20.1 t/s | 626 t/s |
-
-Decode on this model is dominated by MTP acceptance, which swings a few t/s
-between bench runs on the sampled corpus — treat decode as ~21–24 t/s; the
-padding change is decode-neutral once normalized for acceptance (prefill is
-acceptance-independent). With b12x master (≥ `80eb49b`, GLM sparse-decode
-optimizations; the mods here pin `b12x==0.23.0`) depth-0 decode measured
-24.0 ± 0.2 t/s on this config.
-
-**fp8 head-padding progression** (same config throughout; 16 real heads/rank at
-TP=4): the stock kernel padded queries to 64 heads — 75% zeros. Padding to 32
-(back199640, GB10 forum) lifted prefill +28–34%; padding to 16 — i.e. not at all,
-via the b12x `mg_n_hg=1` path — adds another +6–10%. Prefill t/s by pad width:
-
-| Depth | pad 64 | pad 32 | pad 16 |
-|---|---|---|---|
-| 0   | 498 | 666 | **722** |
-| 8K  | 509 | 671 | **736** |
-| 32K | 461 | 592 | **626** |
-
-See `CHANGES.md` #5–6 and `ATTRIBUTION.md`.
-
-**Original AWQ-INT4 15%-pruned config** (TP=4, separate MTP draft k=3,
-llama-benchy generic corpus; predates the head-padding fixes):
-
-| Depth | Decode (tg) | Prefill (pp) |
-|---|---|---|
-| 0   | 20.2 t/s | 535 t/s |
-| 8K  | 21.9 t/s | 517 t/s |
-| 32K | 21.2 t/s | 476 t/s |
-
-The upstream #46862 fused indexer (vendored) left prefill flat and made decode
-marginally faster (~0–1 t/s) vs the non-fused path — single config,
-cross-harness, unverified.
-
-Numbers will vary with hardware and workload. In my tests decode is
-memory-bandwidth-bound and prefill is bound by the sparse-MLA / indexer kernels
-rather than the MoE GEMM (an NVFP4 MoE swap changed prefill by nothing) — but I
-haven't stress-tested that conclusion broadly.
-
-**MTP draft depth (k):** on the QuantTrio in-checkpoint MTP config, k=4 is the
-measured optimum. k=5 (Z.ai's recommendation) benchmarked as a net regression
-here: position-5 acceptance is low and each extra position costs a sequential
-drafter pass plus a wider MoE expert union per verify step on a
-bandwidth-bound decode (−14% engine steps/s at depth 0). The AWQ config's
-separate-draft recipe ships k=3, which benchmarked best for that setup.
+- `bootstrap.sh` / `launch.sh` — end-to-end bring-up / per-node `docker run` launcher
+- `recipes/` — serving specs: DCP2 (reference), DCP4 (640k), 10%-prune no-DCP, legacy AWQ
+- `patches/draft-quant-packed-mapping.patch` — required DCP-stack fix (quantized-NextN drafts)
+- `kernels/` — legacy-stack Triton sparse-MLA (vLLM/jasl, Apache-2.0, modified — `CHANGES.md`)
+- `prune/awq_surgery.py`, `mtp/` — the 15% prune and separate-draft MTP reconstruction
+- `model-card/`, `docs/retrospective.md` — HF card; every fix, with attribution
 
 ## License
 
-Apache-2.0 (this repo). Serves MIT weights: GLM-5.2 (Z.ai) → AWQ (cyankiwi) →
-pruned here. See `NOTICE` and `ATTRIBUTION.md`.
+Apache-2.0 (this repo). Serves MIT weights: GLM-5.2 (Z.ai) → QuantTrio / AWQ
+(cyankiwi) quants → pruned variants. See `NOTICE` and `ATTRIBUTION.md`.

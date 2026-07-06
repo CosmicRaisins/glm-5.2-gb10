@@ -1,0 +1,46 @@
+# GLM-5.2 UNPRUNED (QuantTrio Int4-Int8Mix, 256 experts) — TP4 + DCP4, MTP k=3, 655,360 ctx.
+# Max-context config: ~430 t/s prefill / ~21 t/s decode, flat to depth (community result
+# on the same stack: decode 19.6-25.7 to 638K; TTFT at that depth ~24 min).
+# KV fp8_ds_mla ~55KB/tok / 4 ranks ≈ 9.5 GiB/rank @ gmu 0.90 — fits, barely. Clear page
+# caches on all nodes before launch. Stack pins + required overrides: see README "Two stacks".
+recipe_version: "1"
+name: GLM-5.2-unpruned-dcp4-640k
+description: UNPRUNED QuantTrio Int4-Int8Mix, e232d26 stack, TP=4 mp + DCP4, MTP k=3, ctx 655360
+raw_entrypoint: true
+shared_weights_nfs: false
+cluster_nodes: [192.168.200.12, 192.168.200.13, 192.168.200.14, 192.168.200.15]  # EDIT: your node rail IPs
+container: vllm-node-tf5-eldritch-dcp:20260705-e232d26-mtpfix-pr72  # EDIT: your locally-built image (README: Two stacks)
+model: /cache/huggingface/hub/glm52-quanttrio-unpruned
+cluster_only: true
+defaults:
+  port: 8210
+env:
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  LD_PRELOAD: /cache/huggingface/hub/nccl-2.30.4/libnccl.so.2
+  HF_HOME: /cache/huggingface
+  TRITON_CACHE_DIR: /cache/huggingface/.tritoncache-eldritch
+  HF_HUB_OFFLINE: "1"
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  GLM52_BIND_HOST_TRITON: "0"
+  VLLM_USE_B12X_SPARSE_INDEXER: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  VLLM_DCP_GLOBAL_TOPK: "1"
+  VLLM_DCP_SHARD_DRAFT: "1"
+  TORCH_CUDA_ARCH_LIST: "12.1a"
+  NCCL_NET: IB
+  NCCL_IB_DISABLE: "0"
+  NCCL_IB_HCA: "rocep1s0f0,roceP2p1s0f0"                   # EDIT: your RoCE/IB HCAs (ibdev2netdev)
+  NCCL_SOCKET_IFNAME: "enP7s7,enp1s0f0np0,enP2p1s0f0np0"   # EDIT: your interfaces (ip link)
+  GLOO_SOCKET_IFNAME: "enp1s0f0np0"                        # EDIT: your rail-1 interface
+  NCCL_IB_GID_INDEX: "3"
+  NCCL_CROSS_NIC: "1"
+  NCCL_CUMEM_ENABLE: "0"
+  NCCL_IGNORE_CPU_AFFINITY: "1"
+  NCCL_DEBUG: WARN
+command: |
+  vllm serve /cache/huggingface/hub/glm52-quanttrio-unpruned
+  --served-model-name glm-5.2-quanttrio --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-quanttrio-unpruned","method":"mtp","quantization":"compressed-tensors","draft_attention_backend":"B12X_MLA_SPARSE","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}}'
+  --tensor-parallel-size 4 --pipeline-parallel-size 1 --decode-context-parallel-size 4 --dcp-kv-cache-interleave-size 1
+  --attention-backend B12X_MLA_SPARSE --hf-overrides '{{"index_topk_pattern":"FFFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSS"}}'
+  --max-model-len 655360 --max-num-seqs 1 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.90 --kv-cache-dtype fp8_ds_mla
+  --async-scheduling --distributed-executor-backend mp --compilation-config '{{"cudagraph_mode":"FULL","max_cudagraph_capture_size":10}}'
