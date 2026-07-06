@@ -8,12 +8,13 @@ prefill / ~22 t/s decode, flat to depth** via TP4 + decode-context-parallel
 (DCP2, KV sharded 2-way). No pruning, no quality compromise.
 
 Context vs prefill is a dial — one flag (`--decode-context-parallel-size`):
+Benchmarked with llama-bency. In agentic workflows with mixed NL and code, I'm getting ~24-28 tok/s
 
 | Config | Weights | Context | Prefill (d0/8k/32k) | Decode | Recipe |
 |---|---|---|---|---|---|
-| **DCP2** (reference) | unpruned | **327,680** | 598 / 603 / 598 | ~22 flat | `glm52-quanttrio-unpruned-dcp2-320k.yaml` |
-| DCP4 | unpruned | **655,360** | ~430 flat | ~21 flat | `glm52-quanttrio-unpruned-dcp4-640k.yaml` |
-| No DCP (legacy stack) | 10%-pruned | 327,680 | 722 / 736 / 626 | ~21–24 | `glm52-quanttrio-10pct-prod.yaml` |
+| **DCP2** (reference) | unpruned | **327,680** | 598 / 603 / 598 | ~22  | `glm52-quanttrio-unpruned-dcp2-320k.yaml` |
+| DCP4 | unpruned | **655,360** | ~430 flat | ~22 | `glm52-quanttrio-unpruned-dcp4-640k.yaml` |
+| No DCP (legacy stack) | 10%-pruned | 327,680 | 722 / 736 / 626 | ~22 | `glm52-quanttrio-10pct-prod.yaml` |
 
 **The trade-off:** DCP shards the MLA KV cache across ranks instead of
 replicating it (per-rank KV ÷ N ⇒ context × N), but prefill attention then pays
