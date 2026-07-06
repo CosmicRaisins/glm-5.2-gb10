@@ -27,7 +27,7 @@ sequence of fixes is in `docs/retrospective.md`.
   measured on GB10. The subsequent 32 → 16 step (`CHANGES.md` #6, zero padding at
   TP=4 via the b12x `mg_n_hg=1` path, a further +6–10% prefill) is this project's
   follow-up to their insight.
-- **0xSero** — NVFP4-REAP checkpoints, MTP layer-78 reference.
+- **0xSero** — MTP layer-78 reference.
 - **brandonmmusic-max / voipmonitor** — GLM-5.2 consumer-Blackwell patches
   reference.
 - **NVIDIA** — DGX Spark / GB10, CUDA 13 / FlashInfer / cutlass, NCCL 2.30.4
