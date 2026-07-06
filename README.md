@@ -37,11 +37,14 @@ are *not* used (the branch's native `B12X_MLA_SPARSE` backend includes the
 sm_121 sparse-MLA work, head-padding included):
 
 - vLLM: [`local-inference-lab/vllm`](https://github.com/local-inference-lab/vllm)
-  branch `codex/dcp-globaltopk-sharddraft-defaults-20260622` @ `e232d26`,
-  **plus PR #72** (draft-DCP config propagation + GLM DCP draft path — without
-  it the drafter crashes with `requires topk_scores_buffer`), **plus**
-  `patches/draft-quant-packed-mapping.patch` (without it quantized-NextN drafts
-  silently build unquantized and MTP acceptance collapses).
+  branch `codex/dcp-globaltopk-sharddraft-defaults-20260622` @ `e232d26`, plus
+  the three patches vendored in `patches/` (apply with `git apply -p1` against
+  the vLLM tree, in order):
+  - `pr72-1-draft-dcp-config-propagation.patch` +
+    `pr72-2-glm-dcp-draft-path.patch` (= upstream PR #72) — without these the
+    drafter crashes with `requires topk_scores_buffer` under DCP.
+  - `draft-quant-packed-mapping.patch` — without it quantized-NextN drafts
+    silently build unquantized and MTP acceptance collapses.
 - b12x @ `9cd63a7` (`pip install --no-deps git+https://github.com/lukealonso/b12x@9cd63a7...`).
 - Non-negotiable launch requirements (all in the recipes):
   - `--hf-overrides '{"index_topk_pattern":"FFFSSS…"}'` — 78 chars derived from
@@ -114,11 +117,66 @@ vLLM's startup free-memory guard will otherwise refuse at 0.90 gmu.
 
 ## Performance notes
 
-Reference DCP2 numbers above: llama-benchy, coherent corpus, pp2048/tg512,
-runs 3, ctx 327680, MTP k=3 (~2.0–2.4 accepted/draft; decode swings a few t/s
-with acceptance between runs). DCP4 measured 430/428 prefill at d8k/d32k and
-~21 decode flat; community result on the same stack holds 19.6–25.7 decode to
-638k depth (TTFT at that depth is ~24 min — deep-context prefill is the cost).
+**Methodology.** All tables: [llama-benchy](https://github.com/eugr/llama-benchy),
+single stream (`max_num_seqs=1`, concurrency 1), pp2048 / tg512, 3 runs per
+test, depths 0/8k/32k, coherent book corpus. The corpus matters for anything
+with speculative decode: random-token corpora misstate MTP acceptance badly
+(3–5× in my tests), so treat non-coherent spec-decode benches as fiction.
+Decode swings a few t/s between runs with acceptance (~2.0–2.4 accepted/draft
+at k=3 on this corpus); prefill is acceptance-independent and tight (±<1%).
+
+**Bench vs real workload:** the ~21–22 t/s decode in the tables is the
+conservative number. In mixed agentic programming workflows (coding-agent
+trajectories: tool calls, code edits, structured output), sustained decode
+runs **24–28 t/s** — code-heavy text drafts better than book prose, so MTP
+acceptance is higher. This holds across all three recipes; the bench and
+real-world numbers rank configs identically.
+
+### DCP2 — unpruned, 327,680 ctx (reference)
+
+| Depth | Prefill (pp2048) | Decode (tg512) | Peak | TTFR |
+|---|---|---|---|---|
+| 0   | 597.9 ± 6.4 | 21.7 ± 0.6 | 31.3 | 3.4 s |
+| 8K  | 602.6 ± 0.8 | 21.5 ± 0.8 | 31.0 | 17.0 s |
+| 32K | 597.7 ± 0.2 | 21.8 ± 0.6 | 30.7 | 58.2 s |
+
+### DCP4 — 655,360 ctx
+
+Measured with the 10%-pruned checkpoint on the same stack (the unpruned
+checkpoint is validated on this config — KV fits at ~9.5 GiB/rank, coherent
+with exact long-range retrieval, same acceptance — but I haven't run the full
+depth sweep on it; prefill is attention-bound and decode bandwidth-bound, so
+expect near-identical numbers):
+
+| Depth | Prefill (pp2048) | Decode (tg512) | Peak |
+|---|---|---|---|
+| 0   | — (first-run JIT skew) | 21.0 ± 2.2 | 31.0 |
+| 8K  | 430.4 ± 0.4 | 19.4 ± 1.7 | 29.0 |
+| 32K | 428.2 ± 0.1 | 21.6 ± 2.0 | 29.0 |
+
+Community result on the same stack holds 19.6–25.7 decode to 638k depth (TTFT
+at that depth ~24 min — deep-context prefill is the cost of the big window).
+
+### No DCP — 10%-pruned, 327,680 ctx (max prefill)
+
+In-checkpoint MTP k=4, fp8 decode head-padding 16, cudagraph FULL, fp8_ds_mla:
+
+| Depth | Prefill (pp2048) | Decode (tg512) |
+|---|---|---|
+| 0   | 722 | 20.9 |
+| 8K  | 736 | 22.1 |
+| 32K | 626 | 20.1 |
+
+With b12x master (≥ `80eb49b`) depth-0 decode measured 24.0 ± 0.2 on this
+config. Treat decode as ~21–24 across runs.
+
+### Legacy AWQ-INT4 15%-pruned (predates head-padding fixes)
+
+| Depth | Prefill (pp2048) | Decode (tg512) |
+|---|---|---|
+| 0   | 535 | 20.2 |
+| 8K  | 517 | 21.9 |
+| 32K | 476 | 21.2 |
 
 **fp8 head-padding progression** (legacy stack; 16 real heads/rank at TP=4):
 stock kernel padded queries to 64 heads (75% zeros) → pad-32 (+28–34% prefill)
