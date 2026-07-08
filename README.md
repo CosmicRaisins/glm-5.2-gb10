@@ -126,6 +126,12 @@ with speculative decode: random-token corpora misstate MTP acceptance badly
 Decode swings a few t/s between runs with acceptance (~2.0–2.4 accepted/draft
 at k=3 on this corpus); prefill is acceptance-independent and tight (±<1%).
 
+**MTP k:** the reference recipe now defaults to **k=4**; the tables below were
+measured at k=3. k=4 is median-equivalent — same steps/sec, a slightly higher
+accept-burst peak — and is the default because agentic/code traffic favors that
+peak. Treat k as a preference knob, not a throughput lever: decode is set by MTP
+acceptance (content-driven), not by k.
+
 **Bench vs real workload:** the ~21–22 t/s decode in the tables is the
 conservative number. In mixed agentic programming workflows (coding-agent
 trajectories: tool calls, code edits, structured output), sustained decode
