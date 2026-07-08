@@ -8,7 +8,7 @@ prefill / ~22 t/s decode, flat to depth** via TP4 + decode-context-parallel
 (DCP2, KV sharded 2-way). No pruning, no quality compromise.
 
 Context vs prefill is a dial — one flag (`--decode-context-parallel-size`):
-Benchmarked with llama-bency. In agentic workflows with mixed NL and code, I'm getting ~24-28 tok/s
+Benchmarked with llama-bency. In agentic workflows with mixed NL and code, I'm getting ~28 tok/s
 
 | Config | Weights | Context | Prefill (d0/8k/32k) | Decode | Recipe |
 |---|---|---|---|---|---|
@@ -129,7 +129,7 @@ at k=3 on this corpus); prefill is acceptance-independent and tight (±<1%).
 **Bench vs real workload:** the ~21–22 t/s decode in the tables is the
 conservative number. In mixed agentic programming workflows (coding-agent
 trajectories: tool calls, code edits, structured output), sustained decode
-runs **24–28 t/s** — code-heavy text drafts better than book prose, so MTP
+runs **~28 t/s** — code-heavy text drafts better than book prose, so MTP
 acceptance is higher. This holds across all three recipes; the bench and
 real-world numbers rank configs identically.
 

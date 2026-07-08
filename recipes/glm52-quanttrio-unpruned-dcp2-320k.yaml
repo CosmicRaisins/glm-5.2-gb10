@@ -1,4 +1,4 @@
-# GLM-5.2 UNPRUNED (QuantTrio Int4-Int8Mix, 256 experts) — TP4 + DCP2, MTP k=3, 327,680 ctx.
+# GLM-5.2 UNPRUNED (QuantTrio Int4-Int8Mix, 256 experts) — TP4 + DCP2, MTP k=4, 327,680 ctx.
 # Reference config: ~600 t/s prefill / ~22 t/s decode, both flat to depth.
 # Per-rank KV identical to the DCP4-640K recipe by construction (327680/2 == 655360/4).
 # Stack: local-inference-lab/vllm @e232d26 (codex/dcp-globaltopk-sharddraft-defaults-20260622)
@@ -7,7 +7,7 @@
 # checkpoint's indexer_types if using different weights.
 recipe_version: "1"
 name: GLM-5.2-unpruned-dcp2-320k
-description: UNPRUNED QuantTrio Int4-Int8Mix, e232d26 stack, TP=4 mp + DCP2, MTP k=3, ctx 327680
+description: UNPRUNED QuantTrio Int4-Int8Mix, e232d26 stack, TP=4 mp + DCP2, MTP k=4, ctx 327680
 raw_entrypoint: true
 shared_weights_nfs: false
 cluster_nodes: [192.168.200.12, 192.168.200.13, 192.168.200.14, 192.168.200.15]  # EDIT: your node rail IPs
@@ -41,7 +41,7 @@ env:
   NCCL_DEBUG: WARN
 command: |
   vllm serve /cache/huggingface/hub/glm52-quanttrio-unpruned
-  --served-model-name glm-5.2-quanttrio --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-quanttrio-unpruned","method":"mtp","quantization":"compressed-tensors","draft_attention_backend":"B12X_MLA_SPARSE","num_speculative_tokens":3,"draft_sample_method":"probabilistic"}}'
+  --served-model-name glm-5.2-quanttrio --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-quanttrio-unpruned","method":"mtp","quantization":"compressed-tensors","draft_attention_backend":"B12X_MLA_SPARSE","num_speculative_tokens":4,"draft_sample_method":"probabilistic"}}'
   --tensor-parallel-size 4 --pipeline-parallel-size 1 --decode-context-parallel-size 2 --dcp-kv-cache-interleave-size 1
   --attention-backend B12X_MLA_SPARSE --hf-overrides '{{"index_topk_pattern":"FFFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSS"}}'
   --max-model-len 327680 --max-num-seqs 1 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.90 --kv-cache-dtype fp8_ds_mla
