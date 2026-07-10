@@ -90,6 +90,21 @@ from the head node: verifies the cluster, builds the image, deploys kernels,
 installs NCCL 2.30.4, fetches weights per node, launches via `launch.sh`.
 OpenAI-compatible API on `:8210`.
 
+**Prefix-cache tradeoff for agent clients:** the stock GLM-5.2 chat template
+clears reasoning from turns before the latest user message. This saves context,
+but it also rewrites the prompt at each user-turn boundary and invalidates the
+cached suffix after the first cleared reasoning block. Clients that prioritize
+cross-turn TTFT can opt out per request:
+
+```json
+{"chat_template_kwargs":{"clear_thinking":false}}
+```
+
+This keeps prior reasoning in subsequent prompts so the prefix stays
+append-only, at the cost of consuming more context and replaying that reasoning
+to the model. The recipes in this repo do not set it; the default remains
+reasoning-clearing behavior.
+
 `launch.sh` is a plain per-node `docker run` — no Ray, no shared FS, no
 harness; multi-node is vLLM's own `--nnodes/--node-rank/--master-addr`.
 `./launch.sh --dry-run` previews, `--stop` tears down. Weights just need to
