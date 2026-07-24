@@ -1,7 +1,16 @@
 # GLM-5.2 on DGX Spark (GB10, sm_121)
 
+The current production profile adds vision and adaptive MTP without replacing
+the QuantTrio text backbone: TP4 + DCP2, 290,816 context, 299,648 tokens of raw
+KV capacity, and an acceptance-driven k=2/4/5 controller. The vision tower and
+projector come from
+[baseten/GLM-5.2-Vision-NVFP4](https://huggingface.co/baseten/GLM-5.2-Vision-NVFP4);
+the adaptive-depth foundation is credited to
+[Aiden Le / aidendle94](https://huggingface.co/aidendle94), with the production
+policy modifications documented in [`adaptive-mtp/`](adaptive-mtp/README.md).
+
 Serves GLM-5.2 (744B/40B MoE, `GlmMoeDsa`) on a 4-node GB10 cluster. The
-reference config serves the **unpruned**
+text-only reference config serves the **unpruned**
 [QuantTrio Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix)
 (full 256 experts, 406 GB, in-checkpoint MTP) at **320k context, ~600 t/s
 prefill / ~22 t/s decode, flat to depth** via TP4 + decode-context-parallel
@@ -12,6 +21,7 @@ Benchmarked with llama-bency. In agentic workflows with mixed NL and code, I'm g
 
 | Config | Weights | Context | Prefill (d0/8k/32k) | Decode | Recipe |
 |---|---|---|---|---|---|
+| **DCP2 + vision + adaptive MTP** (production) | unpruned QuantTrio + MoonViT/PatchMerger | **290,816** | 629 / 643 / 640 | 21.9 / 19.4 / 21.9 mean | `glm52-quanttrio-vision-dcp2-290816.yaml` |
 | **DCP2** (reference) | unpruned | **327,680** | 598 / 603 / 598 | ~22  | `glm52-quanttrio-unpruned-dcp2-320k.yaml` |
 | DCP4 | unpruned | **655,360** | ~430 flat | ~22 | `glm52-quanttrio-unpruned-dcp4-640k.yaml` |
 | No DCP (legacy stack) | 10%-pruned | 327,680 | 722 / 736 / 626 | ~22 | `glm52-quanttrio-10pct-prod.yaml` |
@@ -46,6 +56,10 @@ sm_121 sparse-MLA work, head-padding included):
     drafter crashes with `requires topk_scores_buffer` under DCP.
   - `draft-quant-packed-mapping.patch` — without it quantized-NextN drafts
     silently build unquantized and MTP acceptance collapses.
+  - `adaptive-mtp-vllm-hooks.patch` + `adaptive-mtp/overlay/` — Aiden Le's
+    acceptance-length adaptation forward-ported to this scheduler, with our
+    2/4/5 production policy, per-position marginal-gain decisions,
+    instrumentation, and CUDA graphs for every active depth.
 - b12x @ `9cd63a7` (`pip install --no-deps git+https://github.com/lukealonso/b12x@9cd63a7...`).
 - Non-negotiable launch requirements (all in the recipes):
   - `--hf-overrides '{"index_topk_pattern":"FFFSSS…"}'` — 78 chars derived from
@@ -121,6 +135,10 @@ vLLM's startup free-memory guard will otherwise refuse at 0.90 gmu.
 
 - **Unpruned (reference):** [QuantTrio/GLM-5.2-Int4-Int8Mix](https://huggingface.co/QuantTrio/GLM-5.2-Int4-Int8Mix)
   — 256 experts, w4a16/w8a16, in-checkpoint MTP (layer-78 nextn).
+- **Vision production composite:** the same QuantTrio text and MTP tensors plus
+  Baseten's pinned MoonViT-3d tower and trained PatchMerger projector. The
+  assembler symlinks the existing text shards, so it does not duplicate or
+  requantize the 406 GB backbone; see [`vision/`](vision/README.md).
 - **10%-pruned** (no-DCP / max-prefill option): derived from the same
   checkpoint by data-free expert pruning (see `prune/` for the method).
   Broadly capable, but fine-grained instruction adherence
@@ -141,11 +159,11 @@ with speculative decode: random-token corpora misstate MTP acceptance badly
 Decode swings a few t/s between runs with acceptance (~2.0–2.4 accepted/draft
 at k=3 on this corpus); prefill is acceptance-independent and tight (±<1%).
 
-**MTP k:** the reference recipe now defaults to **k=4**; the tables below were
-measured at k=3. k=4 is median-equivalent — same steps/sec, a slightly higher
-accept-burst peak — and is the default because agentic/code traffic favors that
-peak. Treat k as a preference knob, not a throughput lever: decode is set by MTP
-acceptance (content-driven), not by k.
+**MTP k:** the current production recipe configures a maximum of k=5 but adapts
+on a 2/4/5 ladder. k=2 is the prose-safe baseline; strong head acceptance probes
+k4, then the unconditional marginal gain at p2/p3 and p4 decides whether k4 or
+k5 pays for itself. Text-only historical recipes remain fixed-k unless they set
+`adaptive_speculative_tokens_window`; see [`adaptive-mtp/`](adaptive-mtp/README.md).
 
 **Bench vs real workload:** the ~21–22 t/s decode in the tables is the
 conservative number. In mixed agentic programming workflows (coding-agent
@@ -154,7 +172,24 @@ runs **~28 t/s** — code-heavy text drafts better than book prose, so MTP
 acceptance is higher. This holds across all three recipes; the bench and
 real-world numbers rank configs identically.
 
-### DCP2 — unpruned, 327,680 ctx (reference)
+### DCP2 + vision + adaptive MTP — 290,816 ctx (production)
+
+llama-benchy v0.3.7, pp2048/tg512, five runs, concurrency 1. Decode is reported
+as the mean because the adaptive controller deliberately follows content
+acceptance; medians were 22.1/20.0/22.5 tok/s.
+
+| Depth | Prefill (pp2048) | Decode (tg512 mean) | TTFR median |
+|---|---|---|---|
+| 0 | 629.4 ± 5.0 | 21.9 ± 1.7 | 3.24 s |
+| 8K | 642.9 ± 0.7 | 19.4 ± 1.1 | 15.93 s |
+| 32K | 639.5 ± 0.5 | 21.9 ± 1.9 | 54.46 s |
+
+No text-throughput regression was observed versus the immediately preceding
+adaptive text profile. In workload canaries, code held high depth and reached
+32.7 tok/s for a 512-token completion; generic prose fell to k2. Raw output is
+committed under `benchmarks/vision-v6-20260724/`.
+
+### DCP2 — unpruned, 327,680 ctx (text-only reference)
 
 | Depth | Prefill (pp2048) | Decode (tg512) | Peak | TTFR |
 |---|---|---|---|---|
@@ -205,10 +240,11 @@ stock kernel padded queries to 64 heads (75% zeros) → pad-32 (+28–34% prefil
 → pad-16/none via b12x `mg_n_hg=1` (+6–10% more): 498→666→722 t/s at d0. The
 DCP branch has this natively. See `CHANGES.md` #5–6, `ATTRIBUTION.md`.
 
-**MTP draft depth:** k=4 measured optimum for in-checkpoint MTP on the legacy
-stack; k=5 regresses (−14% steps/s at d0 — low position-5 acceptance, wider
-expert union per verify). The DCP stack ships k=3 (matches the upstream
-branch's tuning). The AWQ separate-draft recipe ships k=3.
+**Historical fixed-depth result:** k=4 measured optimum on the legacy stack;
+fixed k=5 regressed 14% at d0 because prose paid the wider verify cost even when
+p4 acceptance was poor. That result motivated adaptation rather than ruling out
+k5: the production controller only retains k5 when p4 contributes at least 0.15
+accepted tokens per verification batch.
 
 Prefill is bound by sparse-MLA attention + indexer, not MoE GEMM (an NVFP4 MoE
 swap moved prefill by nothing); decode is memory-bandwidth-bound.
@@ -216,8 +252,11 @@ swap moved prefill by nothing); decode is memory-bandwidth-bound.
 ## Contents
 
 - `bootstrap.sh` / `launch.sh` — end-to-end bring-up / per-node `docker run` launcher
-- `recipes/` — serving specs: DCP2 (reference), DCP4 (640k), 10%-prune no-DCP, legacy AWQ
+- `recipes/` — serving specs, including the 290,816-context production vision profile
+- `adaptive-mtp/` — exact 2/4/5 controller, build overlay, policy documentation
+- `vision/` — zero-copy checkpoint assembler and vLLM GLM-5V overlay
 - `patches/draft-quant-packed-mapping.patch` — required DCP-stack fix (quantized-NextN drafts)
+- `patches/adaptive-mtp-vllm-hooks.patch` — scheduler/config/CUDA-graph integration
 - `kernels/` — legacy-stack Triton sparse-MLA (vLLM/jasl, Apache-2.0, modified — `CHANGES.md`)
 - `prune/awq_surgery.py`, `mtp/` — the 15% prune and separate-draft MTP reconstruction
 - `model-card/`, `docs/retrospective.md` — HF card; every fix, with attribution

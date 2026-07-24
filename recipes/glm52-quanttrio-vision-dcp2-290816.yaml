@@ -1,0 +1,50 @@
+# QuantTrio GLM-5.2 + Baseten MoonViT/PatchMerger vision production recipe.
+# Text path is otherwise identical to the 2026-07-23 adaptive-MTP production
+# recipe.  The speculative draft remains the original QuantTrio checkpoint.
+recipe_version: "1"
+name: GLM-5.2-QuantTrio-Vision-DCP2-290816
+description: "Production QuantTrio GLM-5.2 + MoonViT vision, TP4+DCP2, adaptive MTP 2/4/5, explicit 8.2GB FP8 KV, 290816 context"
+raw_entrypoint: true
+shared_weights_nfs: false
+cluster_nodes: [192.168.200.12, 192.168.200.13, 192.168.200.14, 192.168.200.15]
+container: vllm-node-tf5-eldritch-dcp:20260724-glm5v-quanttrio-v6
+model: /cache/huggingface/hub/glm52-quanttrio-vision
+cluster_only: true
+defaults:
+  port: 8210
+env:
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  LD_PRELOAD: /cache/huggingface/hub/nccl-2.30.4/libnccl.so.2
+  HF_HOME: /cache/huggingface
+  TRITON_CACHE_DIR: /cache/huggingface/.tritoncache-eldritch
+  HF_HUB_OFFLINE: "1"
+  VLLM_LOGGING_LEVEL: INFO
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  GLM52_BIND_HOST_TRITON: "0"
+  VLLM_USE_B12X_SPARSE_INDEXER: "1"
+  VLLM_USE_V2_MODEL_RUNNER: "1"
+  VLLM_DCP_GLOBAL_TOPK: "1"
+  VLLM_DCP_SHARD_DRAFT: "1"
+  VLLM_ADAPTIVE_SPEC_DEPTHS: "2,4,5"
+  VLLM_MTP_INSTRUMENT: "1"
+  VLLM_MTP_INSTRUMENT_WINDOW: "32"
+  VLLM_B12X_MLA_SPEC_EXTEND_AS_DECODE: "1"
+  TORCH_CUDA_ARCH_LIST: "12.1a"
+  NCCL_NET: IB
+  NCCL_IB_DISABLE: "0"
+  NCCL_IB_HCA: "rocep1s0f0,roceP2p1s0f0"
+  NCCL_SOCKET_IFNAME: "enP7s7,enp1s0f0np0,enP2p1s0f0np0"
+  GLOO_SOCKET_IFNAME: "enp1s0f0np0"
+  NCCL_IB_GID_INDEX: "3"
+  NCCL_CROSS_NIC: "1"
+  NCCL_CUMEM_ENABLE: "0"
+  NCCL_IGNORE_CPU_AFFINITY: "1"
+  NCCL_DEBUG: WARN
+command: |
+  vllm serve /cache/huggingface/hub/glm52-quanttrio-vision
+  --served-model-name glm-5.2-quanttrio glm-5.2-quanttrio-vision --host 0.0.0.0 --port {port} --trust-remote-code --reasoning-parser glm45 --tool-call-parser glm47 --enable-auto-tool-choice --enable-prefix-caching --speculative-config '{{"model":"/cache/huggingface/hub/glm52-quanttrio-unpruned","method":"mtp","quantization":"compressed-tensors","draft_attention_backend":"B12X_MLA_SPARSE","num_speculative_tokens":5,"draft_sample_method":"probabilistic","adaptive_speculative_tokens_window":32}}'
+  --tensor-parallel-size 4 --pipeline-parallel-size 1 --decode-context-parallel-size 2 --dcp-kv-cache-interleave-size 1
+  --attention-backend B12X_MLA_SPARSE --hf-overrides '{{"index_topk_pattern":"FFFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSSFSSS"}}'
+  --max-model-len 290816 --max-num-seqs 1 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.90 --kv-cache-memory-bytes 8.2g --kv-cache-dtype fp8_ds_mla
+  --limit-mm-per-prompt '{{"image":1,"video":0}}' --mm-processor-cache-gb 0 --mm-encoder-tp-mode weights
+  --async-scheduling --distributed-executor-backend mp --compilation-config '{{"cudagraph_mode":"FULL","max_cudagraph_capture_size":10}}'

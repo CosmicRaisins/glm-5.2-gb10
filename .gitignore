@@ -17,6 +17,7 @@ venv/
 *.out
 *.bak
 *.bak.*
+*.orig
 .DS_Store
 /tmp/
 scratch/

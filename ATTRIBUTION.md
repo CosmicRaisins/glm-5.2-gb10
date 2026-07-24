@@ -18,8 +18,17 @@ sequence of fixes is in `docs/retrospective.md`.
   `kernels/sparse_attn_indexer.py` with its call-site in `kernels/deepseek_v2.py`.
   Not original to this repo. (Apache-2.0)
 - **eugr** — `spark-vllm-docker` build harness and `llama-benchy`.
-- **aidendle94 / local-inference-lab** — B12X kernel lineage, raw-entrypoint
-  serving pattern.
+- **Aiden Le / aidendle94 / local-inference-lab** — B12X kernel lineage,
+  raw-entrypoint serving pattern, and the acceptance-length adaptive
+  speculative-decoding foundation forward-ported in `adaptive-mtp/`. This
+  project's 2/4/5 ladder, k2 floor, marginal p2/p3+p4 policy, shortened probe
+  windows, and JSON instrumentation are modifications to that foundation.
+- **Baseten** — `GLM-5.2-Vision-NVFP4`: the trained PatchMerger projector,
+  frozen MoonViT-3d tower packaging, GLM-5V config/processing reference, and
+  chat template used by the QuantTrio vision composite. (MIT)
+- **Moonshot AI** — MoonViT-3d vision tower from Kimi-K2.6 and the Kimi-K2.5
+  multimodal implementation lineage specialized by the local vLLM wrapper.
+  (Modified MIT upstream terms)
 - **back199640** (GB10 user forum) — the fp8 decode head-padding fix
   (`_compute_fp8_decode_padded_heads`: pad to 32, not 64, when heads/rank ≤ 32),
   vendored in `kernels/flashmla_sparse.py`. At TP=4 GLM-5.2 has 16 heads/rank, so

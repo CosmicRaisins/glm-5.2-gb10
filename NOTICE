@@ -42,8 +42,14 @@ Referenced (not vendored) components
       https://github.com/eugr/spark-vllm-docker  /  eugr/llama-benchy
   - deepseek-v4-flash-gb10 runbook (NCCL 2.30.4 + RDMA/IPC_LOCK passthrough +
     bf16-indexer gotchas) — hazyumps
-  - B12X kernel lineage / raw-entrypoint serving pattern — aidendle94 /
-    local-inference-lab
+  - B12X kernel lineage / raw-entrypoint serving pattern / adaptive speculative
+    depth foundation — Aiden Le (aidendle94) / local-inference-lab
+      https://huggingface.co/aidendle94
+  - GLM-5.2-Vision-NVFP4 MoonViT packaging, trained PatchMerger projector,
+    config/processing reference, and chat template — Baseten (MIT)
+      https://huggingface.co/baseten/GLM-5.2-Vision-NVFP4
+  - MoonViT-3d / Kimi multimodal implementation lineage — Moonshot AI,
+    Kimi-K2.6 (Modified MIT upstream terms)
   - GLM-5.2 consumer-Blackwell vllm-patches reference — brandonmmusic-max /
     voipmonitor
   - NVFP4-REAP checkpoints + REAP MTP draft reference — 0xSero

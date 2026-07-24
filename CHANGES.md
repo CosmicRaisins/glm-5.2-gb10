@@ -86,3 +86,36 @@ LICENSE with my own copyright:
 - `mtp/*` — the separate-draft MTP reconstruction + verification scripts.
 - `recipes/*` — the production serving recipe.
 - `bootstrap.sh`, docs.
+
+## Adaptive speculative-decoding modifications
+
+`patches/adaptive-mtp-vllm-hooks.patch` and
+`adaptive-mtp/overlay/.../acceptance_length.py` modify Apache-2.0 vLLM source.
+They forward-port Aiden Le's acceptance-length adaptive-depth implementation and
+then change its production behavior as follows:
+
+1. Replace the continuous/ratcheted target with a configurable discrete depth
+   ladder and initialize at its lowest point (`2,4,5` in production).
+2. Make k=2 a 32-step safe baseline; a draft-token acceptance ratio of 0.85
+   triggers a k4 probe.
+3. At k4/k5, remove the repeated p0/p1 gate and decide from unconditional
+   marginal tokens contributed by p2+p3 and p4 (`0.70` to probe k5, `0.35` to
+   retain k4, `0.15` p4 gain to retain k5).
+4. Halve exploratory windows to 16 steps so inherited high depth retreats
+   quickly after workload changes.
+5. Capture CUDA graphs for every allowed draft depth and add opt-in structured
+   `MTP_WINDOW_JSON` scheduler telemetry using existing CPU-side accept counts.
+
+## GLM-5.2 Vision modifications
+
+The `vision/` wrapper is an Apache-2.0 vLLM specialization that combines the
+QuantTrio text checkpoint with unmodified MIT vision/projector weights from
+Baseten's `GLM-5.2-Vision-NVFP4` revision `f6eab611...`.
+
+1. Add local `Glm5vConfig`/model registration and reuse vLLM's Kimi-K2.5
+   MoonViT/PatchMerger processing around `GlmMoeDsaForCausalLM`.
+2. Preserve QuantTrio tensor/quantization mappings under the multimodal wrapper.
+3. Expose the nested target `lm_head` so the MTP draft shares the correct output
+   projection; otherwise speculative acceptance is zero.
+4. Treat GLM's MTP draft as text-only even when the target accepts images.
+5. Propagate the sparse `index_topk_pattern` through the outer vision config.

@@ -1,0 +1,325 @@
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -267,0 +268,6 @@
++    adaptive_speculative_tokens_window: int | None = Field(default=None, ge=1)
++    """Number of speculative verification steps to average before adapting the
++    batch-wide speculative-token count from accepted draft lengths. ``None``
++    disables acceptance-length adaptation. ``num_speculative_tokens`` is the
++    initial value and upper bound."""
++
+@@ -780,0 +787,21 @@
++        if self.adaptive_speculative_tokens_window is not None:
++            unsupported_methods = {
++                "ngram",
++                "ngram_gpu",
++                "suffix",
++                "custom_class",
++            }
++            if self.method in unsupported_methods:
++                raise ValueError(
++                    "adaptive_speculative_tokens_window is only supported with "
++                    "model-backed speculative decoding methods."
++                )
++            if (
++                self.target_model_config is not None
++                and self.target_model_config.is_diffusion
++            ):
++                raise ValueError(
++                    "adaptive_speculative_tokens_window is not supported with "
++                    "diffusion models."
++                )
++
+@@ -1299,0 +1327,3 @@
++
++    def uses_acceptance_length_adaptation(self) -> bool:
++        return self.adaptive_speculative_tokens_window is not None
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -3,0 +4,2 @@
++import json
++import os
+@@ -59,0 +62,3 @@
++from vllm.v1.spec_decode.dynamic.acceptance_length import (
++    AcceptanceLengthController,
++)
+@@ -230,0 +236,16 @@
++        self.mtp_instrument_enabled = os.getenv("VLLM_MTP_INSTRUMENT", "0").strip().lower() not in {"", "0", "false", "no", "off"}
++        try:
++            self.mtp_instrument_window = max(1, int(os.getenv("VLLM_MTP_INSTRUMENT_WINDOW", "32")))
++        except ValueError:
++            self.mtp_instrument_window = 32
++        self._mtp_window_index = 0
++        self._mtp_window_steps = 0
++        self._mtp_window_samples = 0
++        self._mtp_window_draft_tokens = 0
++        self._mtp_window_accepted_tokens = 0
++        self._mtp_window_output_tokens = 0
++        self._mtp_window_started_ns = 0
++        self._mtp_window_context_min: int | None = None
++        self._mtp_window_context_max: int | None = None
++        self._mtp_position_survival = [0] * max(1, self.num_spec_tokens)
++        self._mtp_position_eligible = [0] * max(1, self.num_spec_tokens)
+@@ -232,0 +254 @@
++        self.acceptance_length_controller: AcceptanceLengthController | None = None
+@@ -239,0 +262,25 @@
++            observation_window = getattr(
++                speculative_config, "adaptive_speculative_tokens_window", None
++            )
++            if observation_window is not None:
++                raw_ladder = os.getenv("VLLM_ADAPTIVE_SPEC_DEPTHS", "2,4")
++                try:
++                    ladder = sorted(
++                        {int(tok) for tok in raw_ladder.split(",") if tok.strip()}
++                    )
++                except ValueError:
++                    logger.warning(
++                        "VLLM_ADAPTIVE_SPEC_DEPTHS=%r is not a comma-separated "
++                        "list of ints; falling back to 2,4.",
++                        raw_ladder,
++                    )
++                    ladder = [2, 4]
++                self.adaptive_spec_snap_points = sorted(
++                    {depth for depth in ladder if 1 <= depth <= self.num_spec_tokens}
++                    | {self.num_spec_tokens}
++                )
++                self.acceptance_length_controller = AcceptanceLengthController(
++                    max_num_spec_tokens=self.num_spec_tokens,
++                    observation_window=observation_window,
++                    depth_ladder=self.adaptive_spec_snap_points,
++                )
+@@ -1057 +1104,14 @@
+-        num_spec_tokens_to_schedule = self.num_spec_tokens
++        if self.acceptance_length_controller is not None:
++            num_spec_tokens_to_schedule = (
++                self.acceptance_length_controller.num_spec_tokens
++            )
++            num_spec_tokens_to_schedule = max(
++                (
++                    depth
++                    for depth in self.adaptive_spec_snap_points
++                    if depth <= num_spec_tokens_to_schedule
++                ),
++                default=num_spec_tokens_to_schedule,
++            )
++        else:
++            num_spec_tokens_to_schedule = self.num_spec_tokens
+@@ -1059,3 +1119,4 @@
+-            num_spec_tokens_to_schedule = self.dynamic_sd_lookup[
+-                len(num_scheduled_tokens)
+-            ]
++            num_spec_tokens_to_schedule = min(
++                num_spec_tokens_to_schedule,
++                self.dynamic_sd_lookup[len(num_scheduled_tokens)],
++            )
+@@ -1494,0 +1556,6 @@
++        adaptive_num_drafts = 0
++        adaptive_num_draft_tokens = 0
++        adaptive_num_accepted_tokens = 0
++        adaptive_position_eligible = [0] * self.num_spec_tokens
++        adaptive_position_accepted = [0] * self.num_spec_tokens
++        mtp_instrument_samples: list[tuple[int, int, int, int]] = []
+@@ -1562,0 +1630,14 @@
++                mtp_instrument_samples.append((num_draft_tokens, num_accepted, request.num_computed_tokens, num_sampled + num_accepted))
++                if self.acceptance_length_controller is not None:
++                    adaptive_num_drafts += 1
++                    adaptive_num_draft_tokens += num_draft_tokens
++                    adaptive_num_accepted_tokens += num_accepted
++                    # Derive conditional per-position acceptance from the same
++                    # CPU-side counts already used by instrumentation. This adds
++                    # no model work or synchronization.
++                    for pos in range(1, self.num_spec_tokens + 1):
++                        if num_draft_tokens >= pos:
++                            if pos == 1 or num_accepted >= pos - 1:
++                                adaptive_position_eligible[pos - 1] += 1
++                            if num_accepted >= pos:
++                                adaptive_position_accepted[pos - 1] += 1
+@@ -1715,0 +1797,30 @@
++        if self.acceptance_length_controller is not None:
++            update = self.acceptance_length_controller.observe_batch(
++                num_drafts=adaptive_num_drafts,
++                num_draft_tokens=adaptive_num_draft_tokens,
++                num_accepted_tokens=adaptive_num_accepted_tokens,
++                position_eligible=adaptive_position_eligible,
++                position_accepted=adaptive_position_accepted,
++            )
++            if (
++                update is not None
++                and update.previous_num_spec_tokens != update.num_spec_tokens
++            ):
++                logger.info(
++                    "Adaptive speculative depth changed from %d to %d "
++                    "(mean accepted drafts: %.2f, mean attempted drafts: %.2f, "
++                    "window: %d steps, reason: %s, tail gain p2+p3: %.2f, "
++                    "p4 gain: %.2f, position acceptance: %s).",
++                    update.previous_num_spec_tokens,
++                    update.num_spec_tokens,
++                    update.mean_num_accepted_tokens,
++                    update.mean_num_draft_tokens,
++                    update.observation_window,
++                    update.decision_reason,
++                    update.tail_gain_23,
++                    update.position_4_gain,
++                    ",".join(f"{rate:.2f}" for rate in update.position_conditional_acceptance[:5]),
++                )
++
++        self._record_mtp_instrumentation(mtp_instrument_samples, update if self.acceptance_length_controller is not None else None)
++
+@@ -1814,0 +1926,37 @@
++
++    def _record_mtp_instrumentation(self, samples: list[tuple[int, int, int, int]], update: Any) -> None:
++        if not self.mtp_instrument_enabled:
++            return
++        self._mtp_window_steps += 1
++        if samples:
++            if self._mtp_window_started_ns == 0:
++                self._mtp_window_started_ns = time.monotonic_ns()
++            self._mtp_window_samples += len(samples)
++            for draft, accepted, context_tokens, output_tokens in samples:
++                self._mtp_window_draft_tokens += draft
++                self._mtp_window_accepted_tokens += accepted
++                self._mtp_window_output_tokens += output_tokens
++                self._mtp_window_context_min = context_tokens if self._mtp_window_context_min is None else min(self._mtp_window_context_min, context_tokens)
++                self._mtp_window_context_max = context_tokens if self._mtp_window_context_max is None else max(self._mtp_window_context_max, context_tokens)
++                for pos in range(1, len(self._mtp_position_survival) + 1):
++                    if draft >= pos:
++                        if pos == 1 or accepted >= pos - 1:
++                            self._mtp_position_eligible[pos - 1] += 1
++                        if accepted >= pos:
++                            self._mtp_position_survival[pos - 1] += 1
++        if self._mtp_window_steps < self.mtp_instrument_window:
++            return
++        drafted = self._mtp_window_draft_tokens
++        accepted = self._mtp_window_accepted_tokens
++        candidate = getattr(update, "num_spec_tokens", None)
++        raw_target = getattr(update, "raw_target_num_spec_tokens", None)
++        points = getattr(self, "adaptive_spec_snap_points", [candidate or self.num_spec_tokens])
++        snapped = max((depth for depth in points if candidate is not None and depth <= candidate), default=None)
++        record = {"schema": 1, "window_index": self._mtp_window_index, "configured_max_k": self.num_spec_tokens, "active_k": max((s[0] for s in samples), default=None), "controller_previous_k": getattr(update, "previous_num_spec_tokens", None), "controller_next_k": candidate, "raw_target_k": raw_target, "snapped_target_k": snapped, "decision_reason": getattr(update, "decision_reason", "fixed") if update is not None else "fixed", "controller_window": getattr(update, "observation_window", None), "tail_gain_23": getattr(update, "tail_gain_23", None), "position_4_gain": getattr(update, "position_4_gain", None), "verification_steps": self._mtp_window_steps, "draft_batches": self._mtp_window_samples, "drafts_attempted": drafted, "drafts_accepted": accepted, "mean_attempted_per_batch": drafted / self._mtp_window_samples if self._mtp_window_samples else 0.0, "mean_accepted_per_batch": accepted / self._mtp_window_samples if self._mtp_window_samples else 0.0, "acceptance_ratio": accepted / drafted if drafted else 0.0, "output_tokens_emitted": self._mtp_window_output_tokens, "window_elapsed_ms": (time.monotonic_ns() - self._mtp_window_started_ns) / 1e6 if self._mtp_window_started_ns else 0.0, "context_tokens_min": self._mtp_window_context_min, "context_tokens_max": self._mtp_window_context_max, "position_survival": [s / self._mtp_window_samples if self._mtp_window_samples else 0.0 for s in self._mtp_position_survival], "position_conditional_acceptance": [self._mtp_position_survival[i] / self._mtp_position_eligible[i] if self._mtp_position_eligible[i] else 0.0 for i in range(len(self._mtp_position_survival))]}
++        logger.info("MTP_WINDOW_JSON %s", json.dumps(record, sort_keys=True))
++        self._mtp_window_index += 1
++        self._mtp_window_steps = self._mtp_window_samples = self._mtp_window_draft_tokens = self._mtp_window_accepted_tokens = self._mtp_window_output_tokens = 0
++        self._mtp_window_started_ns = 0
++        self._mtp_window_context_min = self._mtp_window_context_max = None
++        self._mtp_position_survival = [0] * max(1, self.num_spec_tokens)
++        self._mtp_position_eligible = [0] * max(1, self.num_spec_tokens)
+--- a/vllm/v1/worker/gpu/cudagraph_utils.py
++++ b/vllm/v1/worker/gpu/cudagraph_utils.py
+@@ -34,0 +35 @@
++from vllm.utils.math_utils import round_up
+@@ -44,0 +46,30 @@
++_ADAPTIVE_SPEC_DEPTHS_DEFAULT = "2,4"
++
++
++def _parse_adaptive_spec_depth_ladder(
++    num_speculative_tokens: int,
++) -> list[int]:
++    raw = os.getenv("VLLM_ADAPTIVE_SPEC_DEPTHS", _ADAPTIVE_SPEC_DEPTHS_DEFAULT)
++    try:
++        depths = sorted({int(tok) for tok in raw.split(",") if tok.strip()})
++    except ValueError:
++        logger.warning(
++            "VLLM_ADAPTIVE_SPEC_DEPTHS=%r is not a comma-separated list of "
++            "ints; falling back to %r.",
++            raw,
++            _ADAPTIVE_SPEC_DEPTHS_DEFAULT,
++        )
++        depths = sorted(
++            {int(tok) for tok in _ADAPTIVE_SPEC_DEPTHS_DEFAULT.split(",")}
++        )
++    valid = [depth for depth in depths if 1 <= depth <= num_speculative_tokens]
++    if valid != depths:
++        logger.warning(
++            "VLLM_ADAPTIVE_SPEC_DEPTHS=%r: dropped out-of-range depths "
++            "(valid range [1, %d]); using %s.",
++            raw,
++            num_speculative_tokens,
++            valid,
++        )
++    return valid
++
+@@ -198,0 +230,24 @@
++        max_cg_capture_size = self.compilation_config.max_cudagraph_capture_size
++
++        speculative_config = self.vllm_config.speculative_config
++        adaptive_spec_window = (
++            getattr(speculative_config, "adaptive_speculative_tokens_window", None)
++            if speculative_config is not None
++            else None
++        )
++        if adaptive_spec_window is not None and self.decode_query_len > 1:
++            num_new_sampled_tokens_per_step = (
++                self.decode_query_len - self.vllm_config.num_speculative_tokens
++            )
++            depth_ladder = _parse_adaptive_spec_depth_ladder(
++                self.vllm_config.num_speculative_tokens
++            )
++            decode_query_lens = [
++                query_len
++                for depth in depth_ladder
++                if (query_len := depth + num_new_sampled_tokens_per_step) >= 1
++            ]
++            if self.decode_query_len not in decode_query_lens:
++                decode_query_lens.append(self.decode_query_len)
++        else:
++            decode_query_lens = [self.decode_query_len]
+@@ -211 +266,2 @@
+-                separate_decode_routine
++                not (adaptive_spec_window is not None and self.decode_query_len > 1)
++                and separate_decode_routine
+@@ -223,0 +280,31 @@
++            elif (
++                adaptive_spec_window is not None
++                and self.decode_query_len > 1
++                and separate_decode_routine
++                and decode_mode
++            ):
++                for decode_query_len in decode_query_lens:
++                    rounded_num_tokens = round_up(num_tokens, decode_query_len)
++                    rounded_num_reqs = rounded_num_tokens // decode_query_len
++                    if (
++                        rounded_num_tokens > max_decode_tokens
++                        or (
++                            max_cg_capture_size is not None
++                            and rounded_num_tokens > max_cg_capture_size
++                        )
++                        or rounded_num_reqs > self.max_num_reqs
++                    ):
++                        continue
++
++                    desc = BatchExecutionDescriptor(
++                        cg_mode=decode_mode,
++                        num_tokens=rounded_num_tokens,
++                        num_reqs=rounded_num_reqs,
++                        uniform_token_count=decode_query_len,
++                        num_active_loras=num_active_loras,
++                    )
++                    if desc not in descs_by_mode[decode_mode]:
++                        descs_by_mode[decode_mode].append(desc)
++                        descs_by_token_lora[
++                            (rounded_num_tokens, num_active_loras)
++                        ].append(desc)
+@@ -241,0 +329,24 @@
++
++        if adaptive_spec_window is not None and separate_decode_routine and decode_mode:
++            for decode_query_len, num_reqs in product(
++                decode_query_lens, range(1, min(self.max_num_reqs, 32) + 1)
++            ):
++                num_tokens = decode_query_len * num_reqs
++                if num_tokens > max_decode_tokens or (
++                    max_cg_capture_size is not None
++                    and num_tokens > max_cg_capture_size
++                ):
++                    continue
++                for num_active_loras in self.lora_capture_cases:
++                    desc = BatchExecutionDescriptor(
++                        cg_mode=decode_mode,
++                        num_tokens=num_tokens,
++                        num_reqs=num_reqs,
++                        uniform_token_count=decode_query_len,
++                        num_active_loras=num_active_loras,
++                    )
++                    if desc not in descs_by_mode[decode_mode]:
++                        descs_by_mode[decode_mode].append(desc)
++                        descs_by_token_lora[(num_tokens, num_active_loras)].append(
++                            desc
++                        )
