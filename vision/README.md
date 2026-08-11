@@ -72,16 +72,24 @@ docker build -f vision/Dockerfile \
 - explicit 8.2 GiB/rank `fp8_ds_mla` KV allocation
 - 299,648 tokens of measured GPU KV capacity, leaving 8,832 tokens of headroom
 - adaptive MTP depths 2/4/5, maximum k=5
+- Marlin atomic-add accumulation enabled
 - one image and no video per request
 
-The vision-v6 llama-benchy run (pp2048/tg512, five runs, depth 0/8K/32K,
-concurrency 1) measured flat prefill around 629/643/640 tok/s and decode means
-21.9/19.4/21.9 tok/s. A code canary produced 512 tokens at 32.7 tok/s while
-holding high speculative depth; prose dropped to k2. A standard bus-image test
-correctly identified and described the image. Raw llama-benchy output is in
+The current atomic-add run (pp2048/tg512, five runs, depth 0/8K) measured
+prefill means 603.5/609.9 and decode means 22.3/21.3 tok/s. The controller
+exercised k2/k4/k5. The earlier vision-v6 sweep covered 32K and measured
+629/643/640 prefill with 21.9/19.4/21.9 decode at depth 0/8K/32K. Raw results
+are in `../benchmarks/atomic-20260810/` and
 `../benchmarks/vision-v6-20260724/`.
 
 The 290,816 context limit is a production headroom choice, not the raw KV
 capacity. The vision weights themselves add under 1 GiB, but multimodal runtime
 state, model-wrapper overhead, CUDA graphs, and unified-memory launch headroom
 also compete with KV on GB10.
+
+## License
+
+The wrapper, assembler, Docker overlay, and documentation are Apache-2.0. The
+built image includes the repository `LICENSE` and `NOTICE`. QuantTrio, Baseten,
+and Moonshot weight files retain their upstream terms; assembling them does not
+relicense them.

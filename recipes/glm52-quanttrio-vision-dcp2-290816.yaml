@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 CosmicRaisins and contributors
 # QuantTrio GLM-5.2 + Baseten MoonViT/PatchMerger vision production recipe.
 # Text path is otherwise identical to the 2026-07-23 adaptive-MTP production
 # recipe.  The speculative draft remains the original QuantTrio checkpoint.
@@ -25,6 +27,7 @@ env:
   VLLM_USE_V2_MODEL_RUNNER: "1"
   VLLM_DCP_GLOBAL_TOPK: "1"
   VLLM_DCP_SHARD_DRAFT: "1"
+  VLLM_MARLIN_USE_ATOMIC_ADD: "1"
   VLLM_ADAPTIVE_SPEC_DEPTHS: "2,4,5"
   VLLM_MTP_INSTRUMENT: "1"
   VLLM_MTP_INSTRUMENT_WINDOW: "32"

@@ -1,5 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 CosmicRaisins and contributors
 ARG BASE_IMAGE=vllm-node-tf5-eldritch-dcp:20260705-e232d26-mtpfix-pr72
 FROM ${BASE_IMAGE}
+
+COPY adaptive-mtp/LICENSE adaptive-mtp/NOTICE /usr/share/licenses/glm-5.2-gb10/
 
 COPY patches/adaptive-mtp-vllm-hooks.patch /tmp/adaptive-mtp-vllm-hooks.patch
 COPY adaptive-mtp/overlay/vllm/v1/spec_decode/dynamic/acceptance_length.py \
@@ -15,6 +19,8 @@ RUN cd /usr/local/lib/python3.12/dist-packages \
  && rm /tmp/adaptive-mtp-vllm-hooks.patch
 
 LABEL org.opencontainers.image.title="QuantTrio adaptive MTP overlay"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.source="https://github.com/CosmicRaisins/glm-5.2-gb10"
 LABEL org.opencontainers.image.description="Aiden Le adaptive speculative depth forward-port with production 2/4/5 controller"
 LABEL local.quanttrio.adaptive-spec-depths="2,4,5"
 LABEL local.quanttrio.adaptive-spec-window="32@k2,16@k4/k5"

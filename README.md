@@ -17,11 +17,12 @@ prefill / ~22 t/s decode, flat to depth** via TP4 + decode-context-parallel
 (DCP2, KV sharded 2-way). No pruning, no quality compromise.
 
 Context vs prefill is a dial — one flag (`--decode-context-parallel-size`):
-Benchmarked with llama-bency. In agentic workflows with mixed NL and code, I'm getting ~28 tok/s
+Benchmarked with llama-benchy. Mixed agentic coding workloads can sustain about
+28 tok/s when draft acceptance is stronger than book prose.
 
 | Config | Weights | Context | Prefill (d0/8k/32k) | Decode | Recipe |
 |---|---|---|---|---|---|
-| **DCP2 + vision + adaptive MTP** (production) | unpruned QuantTrio + MoonViT/PatchMerger | **290,816** | 629 / 643 / 640 | 21.9 / 19.4 / 21.9 mean | `glm52-quanttrio-vision-dcp2-290816.yaml` |
+| **DCP2 + vision + adaptive MTP** (production) | unpruned QuantTrio + MoonViT/PatchMerger | **290,816** | 604 / 610 / — | 22.3 / 21.3 / — mean | `glm52-quanttrio-vision-dcp2-290816.yaml` |
 | **DCP2** (reference) | unpruned | **327,680** | 598 / 603 / 598 | ~22  | `glm52-quanttrio-unpruned-dcp2-320k.yaml` |
 | DCP4 | unpruned | **655,360** | ~430 flat | ~22 | `glm52-quanttrio-unpruned-dcp4-640k.yaml` |
 | No DCP (legacy stack) | 10%-pruned | 327,680 | 722 / 736 / 626 | ~22 | `glm52-quanttrio-10pct-prod.yaml` |
@@ -72,37 +73,34 @@ sm_121 sparse-MLA work, head-padding included):
     runner; the V1 runner drops DCP from the draft config).
   - `VLLM_USE_B12X_SPARSE_INDEXER=1`, `--attention-backend B12X_MLA_SPARSE`,
     and the same backend pinned as `draft_attention_backend`.
-  - MTP k=3, `"quantization":"compressed-tensors"` and
-    `"draft_sample_method":"probabilistic"` in the speculative config.
+  - A compressed-tensors draft with probabilistic sampling. Fixed-depth
+    reference recipes use k=3; production sets maximum k=5 plus
+    `adaptive_speculative_tokens_window` and the `2,4,5` ladder.
+  - `VLLM_MARLIN_USE_ATOMIC_ADD=1` in the current production profile.
 
 Full credit for the DCP branch, kernels, and the 640k demonstration: m9e /
 voipmonitor (vLLM branch, PR #72) and Zatz (GB10 forum, 655k single-boot
 result). Independently reproduced here: coherent with exact long-range
 retrieval at depth, MTP acceptance ~2.0–2.4 accepted/draft.
 
-**Legacy stack (no-DCP row; what `bootstrap.sh`/`launch.sh` bring up).** The
-original port: pinned dev190-era vLLM image plus this repo's Triton kernels.
-`kernels/` are the implementations; two patch steps from my
+**Legacy kernel stack.** The original no-DCP port remains under `kernels/` as a
+modified Apache-2.0 implementation of the vLLM/jasl portable sm12x path. It
+contains the GLM V3.2 adapter, int64 and bounds fixes, fused prefill kernel, and
+head-padding work documented in `CHANGES.md`. Two patch steps from my
 [`eugr/spark-vllm-docker`](https://github.com/eugr/spark-vllm-docker) fork wire
-them in (bake with `RUN bash mods/<name>/run.sh`):
+them in:
 
-- `mods/glm52-sm12x-sparse` — copies `kernels/` into the vLLM tree and
-  short-circuits the DeepGEMM-only paths to the `sm12x_*` fallbacks on
-  capability 120 (no `deep_gemm` shim; in-place wrapper patch).
-- `mods/glm52-b12x-sparse` — `pip install --no-deps b12x==0.23.0` + a
-  `fused_indexer` score-mode patch; provides the sparse-MLA decode path.
-
-**cudagraph note (legacy stack):** perf numbers use `cudagraph_mode: FULL`
-*with b12x installed* (its decode kernel is capture-safe). Without b12x, decode
-silently falls back to a Triton kernel that allocates under capture — FULL
-crashes with `cudaErrorStreamCaptureInvalidated`; use `PIECEWISE`.
+- `mods/glm52-sm12x-sparse` copies `kernels/` into vLLM and routes
+  DeepGEMM-only paths to the `sm12x_*` fallbacks.
+- `mods/glm52-b12x-sparse` installs B12X and provides the capture-safe
+  sparse-MLA decode path.
 
 ## Run
 
-Edit the CONFIG block in `bootstrap.sh` (node IPs, weights dir, HF repos), run
-from the head node: verifies the cluster, builds the image, deploys kernels,
-installs NCCL 2.30.4, fetches weights per node, launches via `launch.sh`.
-OpenAI-compatible API on `:8210`.
+Build the pinned DCP base with the patches listed above, then build the adaptive
+and vision child images from the repository root. Exact commands and base-image
+pins are in `adaptive-mtp/README.md` and `vision/README.md`. The current serving
+spec is `recipes/glm52-quanttrio-vision-dcp2-290816.yaml`.
 
 **Prefix-cache tradeoff for agent clients:** the stock GLM-5.2 chat template
 clears reasoning from turns before the latest user message. This saves context,
@@ -119,17 +117,16 @@ append-only, at the cost of consuming more context and replaying that reasoning
 to the model. The recipes in this repo do not set it; the default remains
 reasoning-clearing behavior.
 
-`launch.sh` is a plain per-node `docker run` — no Ray, no shared FS, no
-harness; multi-node is vLLM's own `--nnodes/--node-rank/--master-addr`.
-`./launch.sh --dry-run` previews, `--stop` tears down. Weights just need to
-exist per node under `$WEIGHTS_DIR/hub/...` (NFS works; nothing requires it).
-Recipes and `launch.sh` carry RoCE fabric values hardcoded to my cluster —
-lines marked `EDIT`.
+The recipe is the production source of truth. Replace the cluster-specific RoCE
+interfaces and node addresses before launching it through a compatible
+raw-entrypoint harness or transcribing its environment and command into your
+launcher. Clear page caches on every node before a large boot; vLLM's unified-
+memory startup guard can otherwise reject the 0.90 allocation. The API listens
+on `:8210`.
 
-For the DCP configs, build the image from the DCP-stack pins above, then use
-the corresponding recipe's flags/env with the same launcher. Clear page caches
-on every node before large launches (`echo 3 > /proc/sys/vm/drop_caches`) —
-vLLM's startup free-memory guard will otherwise refuse at 0.90 gmu.
+`bootstrap.sh` and `launch.sh` are retained for the legacy no-DCP kernel stack.
+`launch.sh` is a plain per-node `docker run`; it is not the current DCP image
+builder.
 
 ## Weights
 
@@ -139,25 +136,20 @@ vLLM's startup free-memory guard will otherwise refuse at 0.90 gmu.
   Baseten's pinned MoonViT-3d tower and trained PatchMerger projector. The
   assembler symlinks the existing text shards, so it does not duplicate or
   requantize the 406 GB backbone; see [`vision/`](vision/README.md).
-- **10%-pruned** (no-DCP / max-prefill option): derived from the same
-  checkpoint by data-free expert pruning (see `prune/` for the method).
-  Broadly capable, but fine-grained instruction adherence
-  measurably degrades: with a standing instruction to end every generation
-  with an exact phrase, the unpruned checkpoint reproduces it verbatim; the
-  pruned one includes the phrase but slightly alters its wording nearly every
-  time. Treat the prune as a capability trade, not a free lunch.
-- Legacy AWQ config (preserved): [AWQ-INT4 15%-pruned](https://huggingface.co/CosmicRaisins/GLM-5.2-AWQ-INT4-15pct)
-  + [separate MTP draft](https://huggingface.co/CosmicRaisins/GLM-5.2-MTP-INT4-aligned).
+- **Historical only:** the 10% QuantTrio prune and legacy
+  [AWQ 15% prune](https://huggingface.co/CosmicRaisins/GLM-5.2-AWQ-INT4-15pct)
+  plus its separate MTP draft predate DCP. They remain reproducible under
+  `prune/` and `mtp/`, but are not the production path.
 
 ## Performance notes
 
-**Methodology.** All tables: [llama-benchy](https://github.com/eugr/llama-benchy),
-single stream (`max_num_seqs=1`, concurrency 1), pp2048 / tg512, 3 runs per
-test, depths 0/8k/32k, coherent book corpus. The corpus matters for anything
-with speculative decode: random-token corpora misstate MTP acceptance badly
-(3–5× in my tests), so treat non-coherent spec-decode benches as fiction.
-Decode swings a few t/s between runs with acceptance (~2.0–2.4 accepted/draft
-at k=3 on this corpus); prefill is acceptance-independent and tight (±<1%).
+**Methodology.** Tables use
+[llama-benchy](https://github.com/eugr/llama-benchy), one stream
+(`max_num_seqs=1`, concurrency 1), pp2048/tg512, and a coherent book corpus.
+The production table uses five runs; historical reference tables use three.
+Random-token corpora misstate speculative acceptance badly (3–5× in my tests).
+Decode therefore moves with content and acceptance; prefill is comparatively
+tight.
 
 **MTP k:** the current production recipe configures a maximum of k=5 but adapts
 on a 2/4/5 ladder. k=2 is the prose-safe baseline; strong head acceptance probes
@@ -165,29 +157,24 @@ k4, then the unconditional marginal gain at p2/p3 and p4 decides whether k4 or
 k5 pays for itself. Text-only historical recipes remain fixed-k unless they set
 `adaptive_speculative_tokens_window`; see [`adaptive-mtp/`](adaptive-mtp/README.md).
 
-**Bench vs real workload:** the ~21–22 t/s decode in the tables is the
-conservative number. In mixed agentic programming workflows (coding-agent
-trajectories: tool calls, code edits, structured output), sustained decode
-runs **~28 t/s** — code-heavy text drafts better than book prose, so MTP
-acceptance is higher. This holds across all three recipes; the bench and
-real-world numbers rank configs identically.
+**Bench vs real workload:** the book-corpus result is the conservative decode
+number. Mixed coding-agent traffic can sustain about 28 tok/s when code and
+structured output raise draft acceptance; treat that as workload-specific.
 
 ### DCP2 + vision + adaptive MTP — 290,816 ctx (production)
 
-llama-benchy v0.3.7, pp2048/tg512, five runs, concurrency 1. Decode is reported
-as the mean because the adaptive controller deliberately follows content
-acceptance; medians were 22.1/20.0/22.5 tok/s.
+The current atomic-add run used llama-benchy v0.3.7, pp2048/tg512, five runs,
+concurrency 1, and prefix-cache bypass. The controller exercised k2/k4/k5 and
+accepted 2,944 of 4,676 drafted tokens across warmup and measurement.
 
-| Depth | Prefill (pp2048) | Decode (tg512 mean) | TTFR median |
-|---|---|---|---|
-| 0 | 629.4 ± 5.0 | 21.9 ± 1.7 | 3.24 s |
-| 8K | 642.9 ± 0.7 | 19.4 ± 1.1 | 15.93 s |
-| 32K | 639.5 ± 0.5 | 21.9 ± 1.9 | 54.46 s |
+| Depth | Prefill mean | Decode mean | Decode median | TTFR median |
+|---|---:|---:|---:|---:|
+| 0 | 603.5 | 22.3 ± 3.0 | 21.5 | 3.42 s |
+| 8K | 609.9 | 21.3 ± 1.1 | 21.7 | 16.80 s |
 
-No text-throughput regression was observed versus the immediately preceding
-adaptive text profile. In workload canaries, code held high depth and reached
-32.7 tok/s for a 512-token completion; generic prose fell to k2. Raw output is
-committed under `benchmarks/vision-v6-20260724/`.
+The earlier vision-v6 sweep included 32K and measured prefill 629/643/640 and
+decode means 21.9/19.4/21.9 at depth 0/8K/32K. Raw results are under
+`benchmarks/atomic-20260810/` and `benchmarks/vision-v6-20260724/`.
 
 ### DCP2 — unpruned, 327,680 ctx (text-only reference)
 
@@ -199,11 +186,9 @@ committed under `benchmarks/vision-v6-20260724/`.
 
 ### DCP4 — 655,360 ctx
 
-Measured with the 10%-pruned checkpoint on the same stack (the unpruned
-checkpoint is validated on this config — KV fits at ~9.5 GiB/rank, coherent
-with exact long-range retrieval, same acceptance — but I haven't run the full
-depth sweep on it; prefill is attention-bound and decode bandwidth-bound, so
-expect near-identical numbers):
+The table is the retained historical sweep; the unpruned checkpoint has also
+been validated for fit, coherence, and long-range retrieval on DCP4, but not with
+a complete depth sweep.
 
 | Depth | Prefill (pp2048) | Decode (tg512) | Peak |
 |---|---|---|---|
@@ -214,31 +199,15 @@ expect near-identical numbers):
 Community result on the same stack holds 19.6–25.7 decode to 638k depth (TTFT
 at that depth ~24 min — deep-context prefill is the cost of the big window).
 
-### No DCP — 10%-pruned, 327,680 ctx (max prefill)
+### Legacy kernel progression
 
-In-checkpoint MTP k=4, fp8 decode head-padding 16, cudagraph FULL, fp8_ds_mla:
+The no-DCP measurements are retained to isolate kernel changes, not to
+recommend the old pruned serving path. With 16 real heads/rank at TP4, the fp8
+head-padding progression was:
 
-| Depth | Prefill (pp2048) | Decode (tg512) |
-|---|---|---|
-| 0   | 722 | 20.9 |
-| 8K  | 736 | 22.1 |
-| 32K | 626 | 20.1 |
-
-With b12x master (≥ `80eb49b`) depth-0 decode measured 24.0 ± 0.2 on this
-config. Treat decode as ~21–24 across runs.
-
-### Legacy AWQ-INT4 15%-pruned (predates head-padding fixes)
-
-| Depth | Prefill (pp2048) | Decode (tg512) |
-|---|---|---|
-| 0   | 535 | 20.2 |
-| 8K  | 517 | 21.9 |
-| 32K | 476 | 21.2 |
-
-**fp8 head-padding progression** (legacy stack; 16 real heads/rank at TP=4):
 stock kernel padded queries to 64 heads (75% zeros) → pad-32 (+28–34% prefill)
 → pad-16/none via b12x `mg_n_hg=1` (+6–10% more): 498→666→722 t/s at d0. The
-DCP branch has this natively. See `CHANGES.md` #5–6, `ATTRIBUTION.md`.
+DCP branch carries the equivalent support natively. See `CHANGES.md`.
 
 **Historical fixed-depth result:** k=4 measured optimum on the legacy stack;
 fixed k=5 regressed 14% at d0 because prose paid the wider verify cost even when
@@ -251,17 +220,25 @@ swap moved prefill by nothing); decode is memory-bandwidth-bound.
 
 ## Contents
 
-- `bootstrap.sh` / `launch.sh` — end-to-end bring-up / per-node `docker run` launcher
+- `bootstrap.sh` / `launch.sh` — legacy no-DCP bring-up and per-node launcher
 - `recipes/` — serving specs, including the 290,816-context production vision profile
 - `adaptive-mtp/` — exact 2/4/5 controller, build overlay, policy documentation
 - `vision/` — zero-copy checkpoint assembler and vLLM GLM-5V overlay
 - `patches/draft-quant-packed-mapping.patch` — required DCP-stack fix (quantized-NextN drafts)
 - `patches/adaptive-mtp-vllm-hooks.patch` — scheduler/config/CUDA-graph integration
 - `kernels/` — legacy-stack Triton sparse-MLA (vLLM/jasl, Apache-2.0, modified — `CHANGES.md`)
-- `prune/awq_surgery.py`, `mtp/` — the 15% prune and separate-draft MTP reconstruction
-- `model-card/`, `docs/retrospective.md` — HF card; every fix, with attribution
+- `prune/`, `mtp/`, `model-card/` — historical pre-DCP artifacts
+- `docs/retrospective.md`, `docs/licensing.md` — current history, attribution, and downstream packaging rules
 
 ## License
 
-Apache-2.0 (this repo). Serves MIT weights: GLM-5.2 (Z.ai) → QuantTrio / AWQ
-(cyankiwi) quants → pruned variants. See `NOTICE` and `ATTRIBUTION.md`.
+The repository's code, patches, recipes, container overlays, and documentation
+are Apache-2.0. Derived images embed `LICENSE` and `NOTICE` and carry the OCI
+license label.
+
+Model weights are separate: Z.ai GLM-5.2, QuantTrio, cyankiwi, and Baseten
+artifacts retain their MIT terms; MoonViT/Kimi components retain their
+applicable upstream terms. Apache-2.0 on the tooling does not relicense model
+inputs or generated weight composites. See `NOTICE` and `ATTRIBUTION.md`.
+
+See `docs/licensing.md` for downstream packaging rules.

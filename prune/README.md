@@ -1,7 +1,10 @@
 # prune/ — data-free expert prune
 
+> Historical pre-DCP path. Current production serves the unpruned QuantTrio
+> checkpoint with DCP2.
+
 `awq_surgery.py` turns `cyankiwi/GLM-5.2-AWQ-INT4` (256 experts/layer) into the
-218-expert build this stack serves, **without any calibration data**.
+historical 218-expert build, **without any calibration data**.
 
 ## Method
 
@@ -27,3 +30,8 @@ The build is deterministic and reproducible from the same source snapshot.
 > ⚠️ Quality is coherence-checked, not benchmarked — evaluate before production
 > use. This is **not** REAP (which needs calibration data and was found infeasible
 > on this hardware); see `../docs/retrospective.md`.
+
+## License
+
+The pruning source is Apache-2.0. Derived model weights retain all upstream model
+licenses and notices; see the root `NOTICE` and `../docs/licensing.md`.

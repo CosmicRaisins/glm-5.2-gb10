@@ -1,121 +1,111 @@
-# CHANGES
+# Modifications to third-party source
 
-This file states the modifications made to third-party Apache-2.0 source, as
-required by Apache License 2.0 Section 4(b). The vendored kernels under
-`kernels/` originate from the vLLM project (sm12x sparse-MLA / DeepGEMM-fallback
-work carried by jasl). Their original `SPDX-License-Identifier: Apache-2.0` and
-`Copyright contributors to the vLLM project` headers are retained unchanged.
+This file records prominent changes to Apache-2.0 source as required by Apache
+License 2.0 Section 4(b). Original SPDX and copyright notices remain in modified
+files. `NOTICE` records upstream licensing; `ATTRIBUTION.md` explains authorship.
 
-## Modifications to `kernels/` (mine)
+## Current DCP and quantized-draft integration
 
-These changes were made by this project to get GLM-5.2's `glm_moe_dsa`
-(DeepSeek-V3.2-style sparse-MLA) attention path running on **NVIDIA GB10 /
-DGX Spark — sm_121 aarch64**, which the upstream Hopper-only `_flashmla_C`
-extension does not support.
+The production image is based on a pinned Apache-2.0 vLLM fork carrying DCP and
+B12X sparse attention.
 
-1. **V3.2 adaptation + monkeypatch** (`patch_flashmla_ops.py`,
-   `flashmla_sparse.py`): adapted jasl's V4-package Triton wrappers into drop-in
-   `flash_mla_sparse_fwd` / `flash_mla_with_kvcache` replacements matching the
-   V3.2 `FlashMLASparseImpl` call signatures, and rebind them on sm12x so
-   `GlmMoeDsa` routes to the portable Triton path instead of native `_flashmla_C`.
+- `patches/pr72-1-draft-dcp-config-propagation.patch` and
+  `patches/pr72-2-glm-dcp-draft-path.patch` preserve m9e / voipmonitor PR #72.
+  They propagate DCP configuration into the draft and provide the GLM sparse
+  indexer buffers required by the DCP MTP path. These patches are third-party
+  work, not authored by this repository.
+- `patches/draft-quant-packed-mapping.patch` adds fused-module packed mappings
+  when vLLM constructs a quantized NextN draft config. Without it, the draft can
+  silently instantiate unquantized projections and lose acceptance.
+- The production recipes configure TP4, DCP2, the sparse GLM indexer pattern, a
+  compressed-tensors draft, probabilistic sampling, and the B12X sparse backend.
 
-2. **int32 → int64 overflow fix** (`sm12x_sparse_mla_attn.py`, in
-   `_gather_dequant_fp8ds_kernel`): under TP=4 with 24 heads/rank and T=2048
-   gathered KV (~4.83 GB), `t * stride` overflows int32 at t≈1821, corrupting
-   long-context prefill. Promoted the offending program-id/stride arithmetic to
-   `tl.int64`. Found via a faithful single-GPU repro of the per-rank fp8_ds_mla
-   paged path.
-
-3. **Index upper-bound guards** (`sparse_mla_kernels.py`): added
-   `(kv_index >= 0) & (kv_index < num_kv_rows)` bounds checks in the scalar,
-   multihead, and d512-split sparse-MLA kernels to stop out-of-range gathers on
-   prefill chunks beyond 2048 tokens.
-
-4. **Fused gather-dequant-attn kernel** (`sm12x_sparse_mla_attn.py`, new
-   `_fused_gather_dequant_attn_kernel` / `_fused_gather_dequant_attend`): a fused
-   prefill path that splits the head dim 576 → NoPE 512 + RoPE 64 (avoiding a
-   1024 pad), uses `BLOCK_N=32` with tensor-core `tl.dot` and online softmax, and
-   never materializes the `[T, K, 576]` gathered tensor. Gated by
-   `VLLM_SPARSE_MLA_FUSED` (set `=0` to fall back to the unfused path). This is
-   what took cold-prefill from ~336 to ~508 tok/s and flattened the
-   depth curve.
-
-5. **fp8 decode head-padding 64 → 32** (`flashmla_sparse.py`,
-   `_compute_fp8_decode_padded_heads`): the raw FlashMLA fp8 decode kernel accepts
-   only `h_q ∈ {64, 128}`, but the b12x / Triton sm12x path accepts `%16`/`%32`
-   alignment. At TP=4 GLM-5.2 has 16 heads/rank, so padding to 64 zero-pads 75% of
-   the fp8 attention compute; pad to 32 instead. Bench (GB10 4-node TP=4,
-   QuantTrio, MTP k=4, cudagraph FULL, kv fp8_ds_mla, llama-benchy) vs the 64-pad
-   baseline — prefill **+28–34%** (d0 666 vs 498, d8k 671 vs 509, d32k 592 vs
-   461), decode +4–12%; output coherence verified. Fix credited to **back199640**
-   (GB10 user forum), not original to this repo (see `ATTRIBUTION.md`).
-
-6. **fp8 decode head-padding 32 → 16** (`flashmla_sparse.py`,
-   `_compute_fp8_decode_padded_heads`): follow-up to #5 — the b12x glue
-   (`b12x_sparse_helpers.py`) accepts any `%16` head count and drops to
-   `mg_n_hg=1` when `%32 != 0`, so at TP=4 (16 heads/rank) the query needs no
-   padding at all. Same bench methodology as #5, prefill vs the 32-pad config:
-   **+6–10%** (d0 722 vs 666, d8k 736 vs 671, d32k 626 vs 592); cumulative vs
-   the original 64-pad baseline **+36–45%**. Decode unchanged once normalized
-   for spec-decode acceptance variance between runs; per-call attention time
-   0.26 → 0.165 ms; coherence verified. Note: below 32 heads the raw-FlashMLA
-   fallback (`h_q ∈ {64, 128}`) is unreachable — b12x is required for the fp8
-   decode path (it already was at 32-pad).
-
-## Vendored from upstream vLLM (unmodified)
-
-`kernels/sparse_attn_indexer.py` and `kernels/deepseek_v2.py` are vendored from the
-vLLM project carrying upstream PR **#46862** (`fused_indexer_q_rope_quant`, by
-yewentao256) — a Triton kernel that fuses the indexer's Q rope + fp8 quant + weight
-scale into a single launch, plus its `use_fused_indexer_q` call-site in the indexer
-forward. Vendored **unmodified** beyond the version pin to the image's vLLM; their
-SPDX/copyright headers are retained. Not original to this repo (see `ATTRIBUTION.md`).
-
-Measured on GB10 (TP=4, glm-5.2 quanttrio, single config; **cross-harness,
-UNVERIFIED**): prefill flat; decode marginally faster (~0–1 tok/s). The fusion trims
-per-step kernel-launch overhead, a larger fraction of decode (bs=1) than of the
-GEMM-dominated prefill.
-
-## Original, non-derivative files (not modified third-party code)
-
-The following are **original works of this project**, not derived from the
-vendored Apache-2.0 kernels, and are licensed under this repository's Apache-2.0
-LICENSE with my own copyright:
-
-- `prune/awq_surgery.py` — the data-free routed-expert prune.
-- `mtp/*` — the separate-draft MTP reconstruction + verification scripts.
-- `recipes/*` — the production serving recipe.
-- `bootstrap.sh`, docs.
-
-## Adaptive speculative-decoding modifications
+## Adaptive speculative decoding
 
 `patches/adaptive-mtp-vllm-hooks.patch` and
 `adaptive-mtp/overlay/.../acceptance_length.py` modify Apache-2.0 vLLM source.
-They forward-port Aiden Le's acceptance-length adaptive-depth implementation and
-then change its production behavior as follows:
+They forward-port Aiden Le / aidendle94 and local-inference-lab's
+acceptance-length adaptive-depth foundation to the pinned DCP scheduler.
 
-1. Replace the continuous/ratcheted target with a configurable discrete depth
-   ladder and initialize at its lowest point (`2,4,5` in production).
-2. Make k=2 a 32-step safe baseline; a draft-token acceptance ratio of 0.85
-   triggers a k4 probe.
-3. At k4/k5, remove the repeated p0/p1 gate and decide from unconditional
-   marginal tokens contributed by p2+p3 and p4 (`0.70` to probe k5, `0.35` to
-   retain k4, `0.15` p4 gain to retain k5).
-4. Halve exploratory windows to 16 steps so inherited high depth retreats
-   quickly after workload changes.
-5. Capture CUDA graphs for every allowed draft depth and add opt-in structured
-   `MTP_WINDOW_JSON` scheduler telemetry using existing CPU-side accept counts.
+Repository-specific changes to that foundation are:
 
-## GLM-5.2 Vision modifications
+1. Replace the continuous/ratcheted target with a configurable discrete ladder
+   and initialize at its lowest point (`2,4,5` in production).
+2. Use k2 as a 32-step baseline. A draft-token acceptance ratio of 0.85 probes
+   k4.
+3. Judge k4/k5 from unconditional marginal accepted tokens at p2+p3 and p4:
+   `0.70` probes k5, `0.35` retains k4, and `0.15` at p4 retains k5.
+4. Shorten exploratory k4/k5 windows to 16 steps so the controller retreats
+   quickly when content changes.
+5. Capture CUDA graphs for every allowed depth.
+6. Add opt-in `MTP_WINDOW_JSON` telemetry from existing CPU-side accept counts;
+   no extra model work or synchronization is introduced.
 
-The `vision/` wrapper is an Apache-2.0 vLLM specialization that combines the
-QuantTrio text checkpoint with unmodified MIT vision/projector weights from
-Baseten's `GLM-5.2-Vision-NVFP4` revision `f6eab611...`.
+The controller remains batch-wide. Production sets `max_num_seqs=1`, making it
+session-equivalent for the workload it was tuned for.
 
-1. Add local `Glm5vConfig`/model registration and reuse vLLM's Kimi-K2.5
-   MoonViT/PatchMerger processing around `GlmMoeDsaForCausalLM`.
-2. Preserve QuantTrio tensor/quantization mappings under the multimodal wrapper.
+## GLM-5.2 vision integration
+
+The `vision/` overlay modifies and specializes Apache-2.0 vLLM multimodal code.
+It uses unmodified, separately licensed QuantTrio and Baseten weights.
+
+1. Register a local `Glm5vConfig` and `Glm5vForConditionalGeneration` around
+   `GlmMoeDsaForCausalLM`.
+2. Preserve QuantTrio tensor names and compressed-tensors mappings below the
+   multimodal wrapper.
 3. Expose the nested target `lm_head` so the MTP draft shares the correct output
    projection; otherwise speculative acceptance is zero.
-4. Treat GLM's MTP draft as text-only even when the target accepts images.
-5. Propagate the sparse `index_topk_pattern` through the outer vision config.
+4. Route GLM's MTP proposer through the text-token path even though the target
+   also accepts images.
+5. Propagate `index_topk_pattern` through the outer vision config.
+6. Assemble a zero-copy composite with pinned sources, relative symlinks, a
+   merged tensor index, and a hash/revision manifest. No weights are trained or
+   requantized by the assembler.
+
+Baseten supplied the trained PatchMerger projector, frozen MoonViT packaging,
+processing/configuration reference, and chat template. Moonshot AI supplied the
+MoonViT/Kimi lineage. Those weights retain their upstream terms.
+
+## Legacy sm12x kernel port
+
+The `kernels/` tree is retained as the original no-DCP GB10 path. It derives
+from Apache-2.0 vLLM and jasl portable sm12x sparse-MLA/DeepGEMM-fallback work.
+The current DCP production image uses its branch-native backend instead of this
+vendored tree, but these modifications remain substantive and reproducible.
+
+1. **GLM V3.2 adapter and monkeypatch** (`patch_flashmla_ops.py`,
+   `flashmla_sparse.py`): adapt the portable wrappers to V3.2
+   `FlashMLASparseImpl` signatures and route sm12x away from unavailable
+   `_flashmla_C` kernels.
+2. **int32 overflow fix** (`sm12x_sparse_mla_attn.py`): promote gathered-KV
+   program-id/stride arithmetic to int64. At TP4 and T=2048 the prior product
+   crossed 2^31 and corrupted long-context prefill.
+3. **Indexer bounds guards** (`sparse_mla_kernels.py`): reject negative and
+   out-of-range sparse KV indices in scalar, multihead, and d512-split paths.
+4. **Fused gather/dequantize/attention prefill**
+   (`sm12x_sparse_mla_attn.py`): split 576 into NoPE 512 + RoPE 64, use
+   tensor-core `tl.dot` with online softmax, and avoid materializing the full
+   gathered tensor. This flattened the legacy depth curve and raised cold
+   prefill from roughly 336 to 508 tok/s in the recorded configuration.
+5. **fp8 decode head padding 64 to 32** (`flashmla_sparse.py`): credited to
+   back199640. On TP4 this removed half of the unnecessary padded heads and
+   measured a 28–34% legacy prefill gain.
+6. **fp8 decode head padding 32 to 16** (`flashmla_sparse.py`): this
+   repository's follow-up uses the B12X `mg_n_hg=1` path at 16 heads/rank,
+   removing padding at TP4 and adding a further 6–10% legacy prefill gain.
+
+`kernels/sparse_attn_indexer.py` and `kernels/deepseek_v2.py` also carry vLLM PR
+#46862 (`fused_indexer_q_rope_quant`, yewentao256). That code is vendored
+upstream work, not an original contribution here.
+
+## Original source and generated artifacts
+
+The repository's original scripts, recipes, documentation, and modifications
+are Apache-2.0 unless marked otherwise. This includes the vision assembler,
+adaptive policy code, quantized-draft mapping fix, launch integration, and the
+historical prune/reconstruction scripts.
+
+The license on source tooling does not relicense its input or output model
+weights. Generated composites and legacy model artifacts retain all applicable
+Z.ai, QuantTrio, cyankiwi, Baseten, Moonshot, and other upstream terms described
+in `NOTICE`.

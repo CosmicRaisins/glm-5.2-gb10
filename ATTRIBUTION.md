@@ -1,52 +1,93 @@
-# Attribution
+# Attribution and contribution boundaries
 
-This stack builds on open-source work. Licensing is in `NOTICE`; the full
-sequence of fixes is in `docs/retrospective.md`.
+This repository combines Apache-2.0 inference code with separately licensed
+model weights. `NOTICE` is the licensing record; `CHANGES.md` lists prominent
+modifications to third-party Apache source.
 
-- **jasl** — the portable Triton sparse-MLA kernels and the sm12x DeepGEMM
-  fallback. GLM-5.2's attention can't run on sm_121 without these. (Apache-2.0,
-  vLLM lineage)
-- **cyankiwi** — `GLM-5.2-AWQ-INT4`, the INT4 weights this prunes. (MIT)
-- **Z.ai / Zhipu AI** — GLM-5.2: model, `GlmMoeDsa` arch, native MTP, `glm45`/
-  `glm47` formats. (MIT)
-- **hazyumps** (`deepseek-v4-flash-gb10`) — GB10 runbook: NCCL 2.30.4, RDMA/
-  `IPC_LOCK` passthrough, bf16-indexer.
-- **vLLM project** — `GlmMoeDsa`, Marlin WNA16, b12x MoE (#40082), the parsers,
-  the NVFP4 oracle. (Apache-2.0)
-- **yewentao256 / vLLM** — `fused_indexer_q_rope_quant` (upstream PR #46862): the
-  fused indexer Q rope+fp8-quant Triton kernel, vendored in
-  `kernels/sparse_attn_indexer.py` with its call-site in `kernels/deepseek_v2.py`.
-  Not original to this repo. (Apache-2.0)
-- **eugr** — `spark-vllm-docker` build harness and `llama-benchy`.
-- **Aiden Le / aidendle94 / local-inference-lab** — B12X kernel lineage,
-  raw-entrypoint serving pattern, and the acceptance-length adaptive
-  speculative-decoding foundation forward-ported in `adaptive-mtp/`. This
-  project's 2/4/5 ladder, k2 floor, marginal p2/p3+p4 policy, shortened probe
-  windows, and JSON instrumentation are modifications to that foundation.
-- **Baseten** — `GLM-5.2-Vision-NVFP4`: the trained PatchMerger projector,
-  frozen MoonViT-3d tower packaging, GLM-5V config/processing reference, and
-  chat template used by the QuantTrio vision composite. (MIT)
-- **Moonshot AI** — MoonViT-3d vision tower from Kimi-K2.6 and the Kimi-K2.5
-  multimodal implementation lineage specialized by the local vLLM wrapper.
-  (Modified MIT upstream terms)
-- **back199640** (GB10 user forum) — the fp8 decode head-padding fix
-  (`_compute_fp8_decode_padded_heads`: pad to 32, not 64, when heads/rank ≤ 32),
-  vendored in `kernels/flashmla_sparse.py`. At TP=4 GLM-5.2 has 16 heads/rank, so
-  the old 64-pad wasted 75% of the fp8 attention compute; a ~+28–34% prefill win
-  measured on GB10. The subsequent 32 → 16 step (`CHANGES.md` #6, zero padding at
-  TP=4 via the b12x `mg_n_hg=1` path, a further +6–10% prefill) is this project's
-  follow-up to their insight.
-- **0xSero** — MTP layer-78 reference.
-- **brandonmmusic-max / voipmonitor** — GLM-5.2 consumer-Blackwell patches
-  reference.
-- **NVIDIA** — DGX Spark / GB10, CUDA 13 / FlashInfer / cutlass, NCCL 2.30.4
-  aarch64.
+## Current production stack
 
-REAP (CerebrasResearch) was evaluated and not used; the prune here is a different,
-data-free method.
+| Area | Foundation | Work in this repository |
+|---|---|---|
+| Adaptive MTP | Aiden Le / aidendle94 and local-inference-lab's acceptance-length adaptive speculative decoding | Forward-port to the pinned DCP scheduler; 2/4/5 ladder; k2 floor; shortened probes; marginal p2/p3 and p4 policy; multi-depth graph coverage; JSON instrumentation |
+| DCP + GLM draft path | vLLM; m9e / voipmonitor branch and PR #72 | Reproducible patch set, quantized-draft mapping fix, production recipes, validation, and GB10 packaging |
+| Sparse-MLA kernels | vLLM and jasl portable sm12x kernel lineage; B12X work by lukealonso/local-inference-lab | GLM V3.2 adapter, overflow and bounds fixes, fused prefill path, head-padding follow-up, integration and benchmarking |
+| Vision | vLLM Kimi multimodal implementation; Baseten GLM-5.2-Vision package; Moonshot MoonViT/Kimi lineage | QuantTrio-preserving GLM-5V wrapper, zero-copy assembler, MTP compatibility fixes, registration overlay, and production profile |
+| Model backbone | Z.ai GLM-5.2; QuantTrio Int4-Int8Mix | No weight training or requantization in the current production composite |
 
-Original to this repo: the data-free `e_score_correction_bias` prune
-(`prune/awq_surgery.py`), the int32→int64 prefill fix and index-bounds guards, the
-fused gather-dequant prefill kernel, the separate-draft MTP reconstruction
-(`mtp/`), the V3.2 monkeypatch adaptation, the recipe, and the bootstrap. Built by
-CosmicRaisins with agentic assistance. Not affiliated with the parties above.
+## Adaptive MTP lineage
+
+Aiden Le / aidendle94 and local-inference-lab supplied the adaptive
+acceptance-length foundation: configuration, scheduler-side depth changes, and
+support for multiple speculative query lengths. The implementation here is a
+forward-port and modification, not an independent invention of adaptive depth.
+
+The repository-specific contribution is the production policy around that
+foundation:
+
+- a discrete `2,4,5` depth ladder with k2 as the safe floor;
+- a 32-step k2 baseline and 16-step exploratory k4/k5 windows;
+- promotion and retreat based on unconditional marginal accepted tokens at
+  p2+p3 and p4;
+- CUDA-graph capture for each allowed depth;
+- structured `MTP_WINDOW_JSON` telemetry using existing CPU-side accept counts.
+
+See `adaptive-mtp/README.md` for the policy and
+`patches/adaptive-mtp-vllm-hooks.patch` for the integration.
+
+## Kernel and vLLM lineage
+
+- **vLLM project** — `GlmMoeDsa`, sparse attention/indexer infrastructure,
+  speculative decoding, Marlin, parsers, and the Apache-2.0 source base.
+- **jasl** — portable sm12x sparse-MLA and DeepGEMM-fallback kernel lineage used
+  by the legacy `kernels/` port.
+- **m9e / voipmonitor** — DCP implementation and the GLM DCP draft path carried
+  in the pinned branch and PR #72 patches.
+- **Aiden Le / local-inference-lab** — B12X kernel and raw-entrypoint lineage in
+  addition to the adaptive-depth foundation.
+- **lukealonso / B12X** — sparse-MLA backend used by the production stack.
+- **yewentao256 / vLLM PR #46862** — fused indexer Q/RoPE quantization code
+  vendored in the legacy kernel tree; not authored here.
+- **back199640** — the original fp8 decode head-padding reduction from 64 to 32.
+  This repository's follow-up reduces 32 to 16 on the B12X path at TP4.
+- **Zatz** — public 655k-context GB10 DCP demonstration reproduced here.
+- **hazyumps** — NCCL 2.30.4, RDMA/`IPC_LOCK`, and bf16-indexer GB10 runbook.
+
+## Vision and weight lineage
+
+- **Z.ai / Zhipu AI** — GLM-5.2 architecture, weights, native MTP head, and chat
+  formats. MIT.
+- **QuantTrio** — the current Int4-Int8Mix text and in-checkpoint MTP tensors.
+  MIT.
+- **Baseten** — trained PatchMerger projector, frozen MoonViT packaging,
+  configuration/processing reference, and chat template. MIT for its published
+  package; redistributed parent weights retain their upstream terms.
+- **Moonshot AI** — MoonViT-3d and Kimi multimodal lineage. Applicable upstream
+  Modified MIT terms remain in force.
+- **cyankiwi** — AWQ-INT4 parent of the historical pruned checkpoint. MIT.
+
+The vision assembler does not train or requantize weights. It joins QuantTrio's
+unchanged text shards with pinned Baseten vision/projector files and records
+source revisions and hashes.
+
+## Work authored in this repository
+
+Subject to the third-party boundaries above, the repository-specific work is:
+
+- the adaptive 2/4/5 policy, forward-port integration, instrumentation, and
+  production validation;
+- the quantized-NextN packed-module mapping fix;
+- the QuantTrio GLM-5V wrapper, assembler, registration overlay, and MTP fixes;
+- the legacy GLM V3.2 kernel adapter, int64 and bounds fixes, fused prefill
+  kernel, and 32-to-16 head-padding follow-up;
+- cluster recipes, launch integration, benchmark methodology, and documentation.
+
+Implementation and integration were performed by CosmicRaisins with AI-assisted
+development. No affiliation with the projects or authors above is implied.
+
+## Historical artifacts
+
+The 15% data-free expert prune and separate INT4 MTP reconstruction remain for
+reproducibility but are no longer the production path. The old MTP draft used
+bytes sourced through a 0xSero checkpoint whose repository declared no explicit
+license; this repository does not apply Apache-2.0 to those weights. REAP was
+evaluated and not used.

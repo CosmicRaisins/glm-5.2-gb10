@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 CosmicRaisins and contributors
 """Register the local GLM-5V model/config in an exact pinned vLLM install."""
 
 from pathlib import Path

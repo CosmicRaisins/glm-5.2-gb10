@@ -86,3 +86,11 @@ env:
 The unified patch is pinned to the `e232d26` package layout and is expected to
 fail closed if its anchors drift. Rebase it rather than forcing it onto a newer
 vLLM scheduler.
+
+## License and lineage
+
+This forward-port and its repository-specific modifications are distributed
+under Apache-2.0. The built image includes the repository `LICENSE` and
+`NOTICE`. The adaptive acceptance-length foundation is credited to Aiden Le /
+aidendle94 and local-inference-lab; the 2/4/5 policy and instrumentation are the
+modifications documented above.

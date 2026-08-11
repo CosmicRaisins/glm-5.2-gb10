@@ -1,5 +1,8 @@
 # mtp/ — separate-draft MTP reconstruction
 
+> Historical pre-DCP path. Current production uses QuantTrio's quantized
+> in-checkpoint MTP tensors with the adaptive 2/4/5 controller.
+
 `cyankiwi/GLM-5.2-AWQ-INT4` drops GLM-5.2's native MTP layer (layer 78), so
 in-model speculative decode isn't available. Rather than graft MTP back into the
 target (which hits vLLM #35041 / #38494), I build a **separate INT4 MTP draft**

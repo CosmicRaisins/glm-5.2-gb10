@@ -19,6 +19,9 @@ tags:
 - vllm
 ---
 
+> Historical pre-DCP artifact. The current production stack uses the unpruned
+> QuantTrio checkpoint with DCP2, adaptive MTP, and the optional vision overlay.
+
 # GLM-5.2-AWQ-INT4-15pct
 
 15% expert-pruned `cyankiwi/GLM-5.2-AWQ-INT4` (256→218 experts/layer), to free
@@ -52,6 +55,7 @@ target: [`CosmicRaisins/GLM-5.2-MTP-INT4-aligned`](https://huggingface.co/Cosmic
 
 ## License
 
-MIT, inherited. Retain upstream notices on redistribution. GLM-5.2 © Z.ai (MIT);
-GLM-5.2-AWQ-INT4 © cyankiwi (MIT). The data-free prune is the only modification.
-Not affiliated with Z.ai or cyankiwi.
+The model weights retain the upstream MIT terms and notices from Z.ai and
+cyankiwi. The pruning code in this repository is Apache-2.0; that tooling license
+does not relicense the derived weights. See the repository `NOTICE` and
+`docs/licensing.md` in the source repository. Not affiliated with Z.ai or cyankiwi.
